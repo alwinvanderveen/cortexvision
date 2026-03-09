@@ -19,28 +19,23 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_16.4.app/Contents/Developer
 
-      - name: Resolve packages
-        run: xcodebuild -resolvePackageDependencies -scheme CortexVision-Package -destination 'platform=macOS'
-
       - name: Build
-        run: |
-          xcodebuild build \
-            -scheme CortexVision-Package \
-            -destination 'platform=macOS' \
-            CODE_SIGNING_ALLOWED=NO
+        run: swift build
 
       - name: Run tests with coverage
         run: |
-          xcodebuild test \
-            -scheme CortexVision-Package \
-            -destination 'platform=macOS' \
-            -enableCodeCoverage YES \
-            -resultBundlePath TestResults/results.xcresult \
-            CODE_SIGNING_ALLOWED=NO
+          set -o pipefail
+          swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt
 
       - name: Parse results for dashboard
         if: always()
-        run: swift Scripts/parse-results.swift TestResults/results.xcresult TestResults .
+        run: |
+          mkdir -p TestResults
+          swift Scripts/parse-results.swift \
+            /tmp/cortexvision-test-output.txt \
+            .build/debug/codecov/CortexVision.json \
+            TestResults \
+            "${{ github.workspace }}"
 
       - name: Extract coverage percentage
         id: coverage
