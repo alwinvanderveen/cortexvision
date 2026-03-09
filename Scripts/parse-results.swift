@@ -98,6 +98,20 @@ func parseSwiftTestOutput(path: String) -> [TestResult] {
             continue
         }
 
+        // Parse skipped tests: ➜ Test "name" skipped.
+        if trimmed.hasPrefix("➜") && trimmed.contains("Test \"") {
+            if let name = extractQuoted(from: trimmed), !seen.contains(name) {
+                seen.insert(name)
+                let suite = activeSuites.last ?? ""
+                tests.append(TestResult(
+                    name: name, suiteName: suite,
+                    nodeIdentifier: "\(suite)/\(name)", status: "SKIP",
+                    tags: [], message: nil, catalog: nil
+                ))
+            }
+            continue
+        }
+
         // Parse test results: ✔ Test "name" passed  or  ✘ Test "name" failed
         if (trimmed.hasPrefix("✔") || trimmed.hasPrefix("✘")) && trimmed.contains("Test \"") {
             guard let name = extractQuoted(from: trimmed) else { continue }

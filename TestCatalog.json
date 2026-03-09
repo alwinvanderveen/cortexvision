@@ -457,5 +457,221 @@
     "input": "NSWindow (400x400, .floating) centered on secondary screen, region capture of window.frame",
     "expectedOutput": "VNDetectBarcodesRequest decodes QR payload identical to the generated UUID",
     "tags": ["capture", "core"]
+  },
+  "RecognizedWord isLowConfidence below 0.7 threshold": {
+    "id": "TC-4.1a",
+    "category": "OCR",
+    "functional": "Words with low OCR confidence are flagged for user review",
+    "technical": "RecognizedWord.isLowConfidence returns true when confidence < 0.7",
+    "input": "RecognizedWord with confidence 0.5",
+    "expectedOutput": "isLowConfidence == true",
+    "tags": ["core", "ocr"]
+  },
+  "RecognizedWord is not low confidence at 0.7": {
+    "id": "TC-4.1b",
+    "category": "OCR",
+    "functional": "Words with adequate confidence are not flagged",
+    "technical": "RecognizedWord.isLowConfidence returns false when confidence >= 0.7",
+    "input": "RecognizedWord with confidence 0.7",
+    "expectedOutput": "isLowConfidence == false",
+    "tags": ["core", "ocr"]
+  },
+  "RecognizedWord is not low confidence at high confidence": {
+    "id": "TC-4.1c",
+    "category": "OCR",
+    "functional": "High confidence words are not flagged",
+    "technical": "RecognizedWord.isLowConfidence returns false when confidence 0.95",
+    "input": "RecognizedWord with confidence 0.95",
+    "expectedOutput": "isLowConfidence == false",
+    "tags": ["core", "ocr"]
+  },
+  "TextBlock detects low confidence words": {
+    "id": "TC-4.1d",
+    "category": "OCR",
+    "functional": "Text blocks with unreliable words are highlighted in the results panel",
+    "technical": "TextBlock.hasLowConfidenceWords returns true if any word has confidence < 0.7",
+    "input": "TextBlock with words at confidence 0.95 and 0.4",
+    "expectedOutput": "hasLowConfidenceWords == true",
+    "tags": ["core", "ocr"]
+  },
+  "TextBlock without low confidence words": {
+    "id": "TC-4.1e",
+    "category": "OCR",
+    "functional": "Text blocks with all reliable words are not flagged",
+    "technical": "TextBlock.hasLowConfidenceWords returns false when all words >= 0.7",
+    "input": "TextBlock with words at confidence 0.95 and 0.88",
+    "expectedOutput": "hasLowConfidenceWords == false",
+    "tags": ["core", "ocr"]
+  },
+  "TextBlock pixelRect converts normalized bounds": {
+    "id": "TC-4.1f",
+    "category": "OCR",
+    "functional": "Text block bounding boxes are correctly positioned on the preview",
+    "technical": "TextBlock.pixelRect(for:) converts normalized 0..1 bounds to pixel coordinates",
+    "input": "bounds (0.1, 0.2, 0.5, 0.05), imageSize 1000x800",
+    "expectedOutput": "pixelRect (100, 160, 500, 40)",
+    "tags": ["core", "ocr"]
+  },
+  "OCRResult fullText joins blocks with newlines": {
+    "id": "TC-4.1g",
+    "category": "OCR",
+    "functional": "User sees all recognized text as continuous readable text",
+    "technical": "OCRResult.fullText joins all block texts with newline separators",
+    "input": "Two TextBlocks: 'First line', 'Second line'",
+    "expectedOutput": "\"First line\\nSecond line\"",
+    "tags": ["core", "ocr"]
+  },
+  "OCRResult wordCount sums across blocks": {
+    "id": "TC-4.1h",
+    "category": "OCR",
+    "functional": "Status bar shows correct total word count",
+    "technical": "OCRResult.wordCount sums words across all text blocks",
+    "input": "Block with 2 words + block with 1 word",
+    "expectedOutput": "wordCount == 3",
+    "tags": ["core", "ocr"]
+  },
+  "OCRResult.empty has no text or words": {
+    "id": "TC-4.1i",
+    "category": "OCR",
+    "functional": "Empty capture produces empty result without crash",
+    "technical": "OCRResult.empty contains no blocks, empty fullText, zero wordCount",
+    "input": "OCRResult.empty",
+    "expectedOutput": "textBlocks.isEmpty, fullText.isEmpty, wordCount == 0",
+    "tags": ["core", "ocr"]
+  },
+  "Each RecognizedWord has a unique identifier": {
+    "id": "TC-4.1j",
+    "category": "OCR",
+    "functional": "Multiple words can be distinguished for rendering",
+    "technical": "Default UUID generation produces unique ids",
+    "input": "Two RecognizedWord instances created with default id",
+    "expectedOutput": "Different id values",
+    "tags": ["core", "ocr"]
+  },
+  "Single block returns unchanged": {
+    "id": "TC-4.2a",
+    "category": "OCR",
+    "functional": "A single text block is returned as-is in reading order",
+    "technical": "ReadingOrderSorter.sort with one block returns the same block",
+    "input": "Array with one TextBlock",
+    "expectedOutput": "Same array with one element",
+    "tags": ["core", "ocr"]
+  },
+  "Empty array returns empty": {
+    "id": "TC-4.2b",
+    "category": "OCR",
+    "functional": "No text produces empty sorted result",
+    "technical": "ReadingOrderSorter.sort with empty array returns empty",
+    "input": "Empty [TextBlock]",
+    "expectedOutput": "Empty array",
+    "tags": ["core", "ocr"]
+  },
+  "Blocks on same line sorted left to right": {
+    "id": "TC-4.2c",
+    "category": "OCR",
+    "functional": "Words on the same line appear in left-to-right order",
+    "technical": "Blocks with similar Y positions are clustered and sorted by X",
+    "input": "Two blocks at same Y, different X positions",
+    "expectedOutput": "Left block first, right block second",
+    "tags": ["core", "ocr"]
+  },
+  "Blocks on different lines sorted top to bottom": {
+    "id": "TC-4.2d",
+    "category": "OCR",
+    "functional": "Text reads from top to bottom of the page",
+    "technical": "Blocks with different Y positions sorted by midY ascending",
+    "input": "Two blocks at different Y positions",
+    "expectedOutput": "Top block first, bottom block second",
+    "tags": ["core", "ocr"]
+  },
+  "Multi-column layout reads correctly": {
+    "id": "TC-4.2e",
+    "category": "OCR",
+    "functional": "Two-column text reads left-column then right-column per row",
+    "technical": "Y-band clustering groups same-line blocks; X-sort within each band",
+    "input": "4 blocks in 2x2 grid (2 columns, 2 rows)",
+    "expectedOutput": "Col1-Line1, Col2-Line1, Col1-Line2, Col2-Line2",
+    "tags": ["core", "ocr"]
+  },
+  "OCR recognizes single paragraph text": {
+    "id": "TC-4.3a",
+    "category": "Verification",
+    "functional": "OCR correctly recognizes a paragraph of clear text from a captured reference window",
+    "technical": "Create reference window with known text, capture via captureRegion, run OCREngine.recognizeText, verify key phrases in result",
+    "input": "NSWindow (600x300) with 'CortexVision OCR Test' paragraph",
+    "expectedOutput": "fullText contains 'CortexVision' and 'OCR', textBlocks >= 1, wordCount > 0",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR recognizes two-column layout": {
+    "id": "TC-4.3b",
+    "category": "Verification",
+    "functional": "OCR handles multi-column text layouts",
+    "technical": "Two-column reference window captured and analyzed, both columns recognized",
+    "input": "NSWindow (800x350) with left and right text columns",
+    "expectedOutput": "fullText contains 'Left', 'Right', and content words from both columns",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR recognizes text around figures": {
+    "id": "TC-4.3c",
+    "category": "Verification",
+    "functional": "OCR extracts text correctly even when figures are present",
+    "technical": "Reference window with text and blue rectangle captured, text from above and below figure recognized",
+    "input": "NSWindow (700x500) with text above/below a blue rectangle",
+    "expectedOutput": "fullText contains text from above and below the figure area",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR recognizes Dutch diacritics": {
+    "id": "TC-4.3d",
+    "category": "Verification",
+    "functional": "OCR correctly handles Dutch characters with diacritics (ë, é, ü, etc.)",
+    "technical": "Reference window with Dutch text captured, Vision framework with nl-NL language recognizes diacritics",
+    "input": "NSWindow (600x250) with 'café', 'crème brûlée', 'geïnspireerde', 'coöperatie'",
+    "expectedOutput": "fullText contains 'Nederlandse' and at least some diacritical words",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR on empty window produces empty result": {
+    "id": "TC-4.3e",
+    "category": "Verification",
+    "functional": "Empty capture produces empty or minimal OCR result without crash",
+    "technical": "White window with no text captured, OCR returns very few blocks",
+    "input": "NSWindow (400x300) with only white background",
+    "expectedOutput": "textBlocks.count <= 2",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR recognizes multiple separated paragraphs": {
+    "id": "TC-4.3f",
+    "category": "Verification",
+    "functional": "OCR handles multiple paragraphs with spacing between them",
+    "technical": "Reference window with 3 spaced paragraphs captured and analyzed",
+    "input": "NSWindow (600x500) with 'First Paragraph', 'Second Paragraph', 'Third Paragraph'",
+    "expectedOutput": "fullText contains 'First', 'Second', 'Third', 'fox'; textBlocks >= 3",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR confidence scores are within valid range": {
+    "id": "TC-4.3g",
+    "category": "Verification",
+    "functional": "Confidence scores are meaningful values between 0 and 1",
+    "technical": "OCR on clear text produces all confidence values in [0,1] with average > 0.8",
+    "input": "Clear black text on white background",
+    "expectedOutput": "All confidence values in [0.0, 1.0], average > 0.8",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR text blocks have valid normalized bounds": {
+    "id": "TC-4.3h",
+    "category": "Verification",
+    "functional": "Bounding boxes are correctly positioned within the image",
+    "technical": "All bounds from Vision framework are within 0..1 normalized range",
+    "input": "Clear text captured via region capture",
+    "expectedOutput": "All bounds x,y in [0,1], width/height > 0, maxX/maxY <= 1.01",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR only captures visible text in scrollable window": {
+    "id": "TC-4.3i",
+    "category": "Verification",
+    "functional": "When a window has a scrollbar, OCR only recognizes text visible in the viewport, not content scrolled out of view",
+    "technical": "Create NSScrollView with 10 uniquely-keyed paragraphs in a 300pt window, capture region, verify top 3 paragraphs (ALPHA, BRAVO, CHARLIE) are recognized and bottom 3 (HOTEL, INDIA, JULIET) are not",
+    "input": "600x300 window with NSScrollView containing 10 paragraphs with unique keywords",
+    "expectedOutput": "ALPHA, BRAVO, CHARLIE found; HOTEL, INDIA, JULIET not found; multiple text blocks; >10 words",
+    "tags": ["ocr", "capture"]
   }
 }

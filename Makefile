@@ -11,10 +11,22 @@ APP_BUNDLE := .build/CortexVision.app
 ## Uses swift test so the process inherits Terminal's screen recording permission.
 test:
 	@echo "==> Running tests with coverage..."
-	@set -o pipefail && swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt | tail -60
-	@echo "==> Parsing results..."
-	@swift Scripts/parse-results.swift /tmp/cortexvision-test-output.txt $(COVERAGE_JSON) $(OUTPUT_DIR) $(PROJECT_ROOT)
-	@echo "==> Done."
+	@swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt | tail -60; \
+	TEST_EXIT=$${PIPESTATUS[0]}; \
+	echo "==> Generating coverage report..."; \
+	BIN_DIR=$$(swift build --show-bin-path 2>/dev/null); \
+	BIN="$$BIN_DIR/CortexVisionPackageTests.xctest/Contents/MacOS/CortexVisionPackageTests"; \
+	if [ -d ".build/debug/codecov" ] && [ -f "$$BIN" ]; then \
+		PROFDATA=".build/debug/codecov/default.profdata"; \
+		xcrun llvm-profdata merge -sparse .build/debug/codecov/*.profraw -o "$$PROFDATA" 2>/dev/null || true; \
+		if [ -f "$$PROFDATA" ]; then \
+			xcrun llvm-cov export -instr-profile "$$PROFDATA" "$$BIN" -format=text > $(COVERAGE_JSON) 2>/dev/null || true; \
+		fi; \
+	fi; \
+	echo "==> Parsing results..."; \
+	swift Scripts/parse-results.swift /tmp/cortexvision-test-output.txt $(COVERAGE_JSON) $(OUTPUT_DIR) $(PROJECT_ROOT); \
+	echo "==> Done."; \
+	exit $$TEST_EXIT
 
 ## Run only capture & verification tests
 test-capture:

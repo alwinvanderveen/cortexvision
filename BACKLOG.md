@@ -144,7 +144,7 @@ Als gebruiker wil ik een macOS applicatie kunnen starten met een overzichtelijk 
 
 ## UC-3: Venster & Gebied Capture
 
-**Status:** `IN PROGRESS`
+**Status:** `DONE`
 
 ### Beschrijving
 Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kunnen selecteren en daar een screenshot van maken, zodat ik gericht inhoud kan capturen voor verdere analyse.
@@ -239,7 +239,7 @@ enum OverlayKind { case text, figure }
 
 ## UC-4: OCR Pipeline
 
-**Status:** `DRAFT`
+**Status:** `DONE`
 
 ### Beschrijving
 Als gebruiker wil ik dat na een capture automatisch alle tekst wordt herkend en gestructureerd weergegeven, zodat ik de tekstinhoud kan inzien en exporteren zonder handmatig over te typen.
@@ -441,23 +441,125 @@ Als gebruiker wil ik de herkende tekst als geformateerd Markdown-bestand en de f
 
 ---
 
+## UC-4a: OCR Formatted Output
+
+**Status:** `DRAFT`
+
+### Beschrijving
+Als gebruiker wil ik kunnen kiezen tussen platte tekst en geformatteerde tekst bij OCR-resultaten, zodat de originele documentstructuur (alinea-spacing, kolom-indeling, inspringing) behouden blijft wanneer dat gewenst is.
+
+### Actors
+- Eindgebruiker
+
+### Precondities
+- OCR pipeline is actief (UC-4)
+- Er is een capture met herkende tekst beschikbaar
+
+### Flow
+1. Na OCR-verwerking is tekst beschikbaar in twee formaten
+2. **Plain** (standaard): tekst in leesvolgorde, gescheiden door enkele newlines
+3. **Formatted**: tekst met behoud van structuur:
+   - Grotere Y-gap tussen blokken → dubbele newline (alinea-scheiding)
+   - Kolommen als aparte secties (niet dooreen gemengd)
+   - Relatieve inspringing behouden via spaces
+4. Gebruiker kan in het Results panel schakelen tussen plain en formatted
+5. Copy-functie kopieert het actieve formaat
+
+### Postcondities
+- Beide formaten zijn beschikbaar op `OCRResult`
+- Results panel heeft een toggle voor plain/formatted
+- Copy-knop respecteert de gekozen weergave
+
+### Acceptatiecriteria
+- [ ] `OCRResult.fullText` levert platte tekst (bestaand gedrag)
+- [ ] `OCRResult.formattedText` levert geformatteerde tekst met alinea-spacing
+- [ ] Kolom-layout wordt als aparte secties weergegeven in formatted mode
+- [ ] Toggle in Results panel schakelt tussen plain en formatted
+- [ ] Copy-knop kopieert het actief weergegeven formaat
+- [ ] Formatted output van een enkel-koloms document heeft correcte alinea-scheiding
+
+### Testcases
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-4a.1 | Formatted output van tekst met 3 alinea's | Dubbele newlines tussen alinea's |
+| TC-4a.2 | Formatted output van twee-koloms tekst | Kolommen als aparte secties, niet doorgelezen |
+| TC-4a.3 | Formatted output van enkel-koloms tekst | Zelfde als plain, met alinea-spacing |
+| TC-4a.4 | Toggle tussen plain en formatted in UI | Weergave wisselt correct |
+| TC-4a.5 | Copy in formatted mode | Klembord bevat geformatteerde tekst |
+
+---
+
+## UC-4b: Tekstblok Selectie in Preview
+
+**Status:** `DRAFT`
+
+### Beschrijving
+Als gebruiker wil ik individuele tekstblokken kunnen selecteren in het preview paneel door erop te klikken, zodat ik gericht specifieke tekst kan kopiëren of bekijken zonder het volledige OCR-resultaat te doorlopen.
+
+### Actors
+- Eindgebruiker
+
+### Precondities
+- Er is een capture met OCR-resultaten beschikbaar (UC-4)
+- Overlay-blokken zijn zichtbaar op de preview
+
+### Flow
+1. Gebruiker ziet overlay-blokken op de preview na OCR
+2. Gebruiker klikt op een tekstblok in de preview
+3. Het geselecteerde blok wordt visueel gehighlight (bijv. blauwe rand)
+4. De bijbehorende tekst wordt getoond/gehighlight in het Results panel
+5. Gebruiker kan meerdere blokken selecteren (Cmd+klik)
+6. "Copy Selection" knop kopieert alleen de geselecteerde tekst
+7. Klikken op de achtergrond deselecteert alle blokken
+
+### Postcondities
+- Geselecteerde blokken zijn visueel onderscheiden
+- Selectie is gesynchroniseerd tussen preview en Results panel
+- Geselecteerde tekst kan apart worden gekopieerd
+
+### Acceptatiecriteria
+- [ ] Klik op overlay-blok selecteert het blok
+- [ ] Geselecteerd blok heeft visueel onderscheidende stijl
+- [ ] Corresponderende tekst in Results panel wordt gehighlight
+- [ ] Cmd+klik voegt toe aan selectie
+- [ ] Klik op achtergrond deselecteert alles
+- [ ] "Copy Selection" kopieert alleen geselecteerde blokken
+- [ ] Selectie werkt met zowel venster- als gebiedscapture
+
+### Testcases
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-4b.1 | Klik op tekstblok in preview | Blok wordt geselecteerd, tekst gehighlight in panel |
+| TC-4b.2 | Cmd+klik op tweede blok | Beide blokken geselecteerd |
+| TC-4b.3 | Klik op achtergrond | Alle selectie verwijderd |
+| TC-4b.4 | Copy Selection met 2 blokken geselecteerd | Klembord bevat tekst van alleen die 2 blokken |
+| TC-4b.5 | Selectie na nieuwe capture | Vorige selectie is gewist |
+
+---
+
 ## Implementatievolgorde
 
 ```
-UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DRAFT] ──► UC-3 [DRAFT]
+UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                                        │
                                                        ▼
-                                 UC-7 [DRAFT] ◄── UC-5 [DRAFT]
-                                      ▲            │
-                                      │            ▼
-                                 UC-6 [DRAFT]  UC-4 [DRAFT]
+                                                  UC-4 [DONE]
+                                                       │
+                                              ┌────────┼────────┐
+                                              ▼        ▼        ▼
+                                        UC-4a [DRAFT] UC-4b [DRAFT] UC-5 [DRAFT]
+                                              │        │        │
+                                              └────────┼────────┘
+                                                       ▼
+                                 UC-6 [DRAFT] ──► UC-7 [DRAFT]
                                                        │
                                                        ▼
                                               UC-8 [BACKLOG] (App Store)
 ```
 
-UC-4 en UC-5 kunnen deels parallel worden ontwikkeld na UC-3.
-UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-4+UC-5.
+UC-4a (formatted output) en UC-4b (blokselectie) zijn afhankelijk van UC-4.
+UC-5 kan parallel met UC-4a/UC-4b na UC-4.
+UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-4a+UC-5.
 
 ---
 

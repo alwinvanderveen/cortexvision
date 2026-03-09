@@ -16,7 +16,10 @@ struct MainView: View {
                 )
                 .frame(minWidth: 400)
 
-                ResultsPanel()
+                ResultsPanel(
+                    captureState: viewModel.captureState,
+                    ocrResult: viewModel.ocrResult
+                )
                     .frame(minWidth: 250, idealWidth: 350)
             }
 

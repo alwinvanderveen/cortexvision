@@ -10,6 +10,7 @@ public final class AppViewModel: ObservableObject {
     @Published var captureState: CaptureState = .idle
     @Published var capturedImage: CGImage?
     @Published var analysisOverlays: [AnalysisOverlay] = []
+    @Published var ocrResult: OCRResult?
     @Published var showWindowPicker = false
     @Published var availableWindows: [WindowInfo] = []
     @Published var permissionError: String?
@@ -23,6 +24,7 @@ public final class AppViewModel: ObservableObject {
     private(set) var exportDestination: ExportDestination?
     private(set) var permissionManager: PermissionManager?
     private let regionSelector = RegionSelector()
+    private let ocrEngine = OCREngine()
 
     // MARK: - Computed Properties
 
@@ -106,6 +108,7 @@ public final class AppViewModel: ObservableObject {
         permissionError = nil
         capturedImage = nil
         analysisOverlays = []
+        ocrResult = nil
         captureState = .idle
 
         // Check permission (silent preflight first, prompt only if needed)
@@ -169,8 +172,8 @@ public final class AppViewModel: ObservableObject {
         do {
             let result = try await provider.captureWindow(id: window.id)
             capturedImage = result.image
-            analysisOverlays = [] // Reset overlays, will be populated by UC-4/UC-5
             captureState = .captured(width: result.image.width, height: result.image.height)
+            await runOCR(on: result.image)
         } catch {
             captureState = .error(error.localizedDescription)
         }
@@ -199,10 +202,43 @@ public final class AppViewModel: ObservableObject {
         do {
             let result = try await provider.captureRegion(rect)
             capturedImage = result.image
-            analysisOverlays = [] // Reset overlays
             captureState = .captured(width: result.image.width, height: result.image.height)
+            await runOCR(on: result.image)
         } catch {
             captureState = .error(error.localizedDescription)
+        }
+    }
+
+    // MARK: - OCR Analysis
+
+    private func runOCR(on image: CGImage) async {
+        captureState = .analyzing
+        analysisOverlays = []
+        ocrResult = nil
+
+        do {
+            let result = try await ocrEngine.recognizeText(in: image)
+            ocrResult = result
+
+            // Convert text blocks to analysis overlays for the preview.
+            // Vision uses bottom-left origin (y=0 at bottom), but SwiftUI/CGImage
+            // use top-left origin (y=0 at top), so flip the Y coordinate.
+            analysisOverlays = result.textBlocks.map { block in
+                AnalysisOverlay(
+                    bounds: CGRect(
+                        x: block.bounds.origin.x,
+                        y: 1.0 - block.bounds.origin.y - block.bounds.height,
+                        width: block.bounds.width,
+                        height: block.bounds.height
+                    ),
+                    kind: .text,
+                    label: block.text.prefix(30).description
+                )
+            }
+
+            captureState = .analyzed(wordCount: result.wordCount, figureCount: 0)
+        } catch {
+            captureState = .error("OCR failed: \(error.localizedDescription)")
         }
     }
 }
