@@ -1,0 +1,49 @@
+# Xcode
+*.xcodeproj/project.xcworkspace/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+DerivedData/
+build/
+*.moved-aside
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
+
+# Swift Package Manager
+.build/
+Packages/
+Package.pins
+Package.resolved
+*.workspace
+
+# Coverage & Test Results
+*.xcresult
+TestResults/
+coverage/
+
+# Dashboard build output
+Dashboard/node_modules/
+Dashboard/dist/
+
+# OS files
+.DS_Store
+*.swp
+*~
+._*
+
+# IDE
+.idea/
+.vscode/
+
+# Secrets
+.env
+*.pem
+*.p12
