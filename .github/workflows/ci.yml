@@ -19,39 +19,43 @@ jobs:
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
 
+      - name: Resolve packages
+        run: xcodebuild -resolvePackageDependencies -scheme CortexVision-Package -destination 'platform=macOS'
+
       - name: Build
         run: |
           xcodebuild build \
-            -project CortexVision.xcodeproj \
-            -scheme CortexVision \
+            -scheme CortexVision-Package \
             -destination 'platform=macOS' \
             CODE_SIGNING_ALLOWED=NO
 
       - name: Run tests with coverage
         run: |
           xcodebuild test \
-            -project CortexVision.xcodeproj \
-            -scheme CortexVision \
+            -scheme CortexVision-Package \
             -destination 'platform=macOS' \
             -enableCodeCoverage YES \
             -resultBundlePath TestResults/results.xcresult \
             CODE_SIGNING_ALLOWED=NO
 
+      - name: Parse results for dashboard
+        if: always()
+        run: swift Scripts/parse-results.swift TestResults/results.xcresult TestResults .
+
       - name: Extract coverage percentage
         id: coverage
+        if: always()
         run: |
-          xcrun xccov view --report --json TestResults/results.xcresult > coverage.json
-          COVERAGE=$(python3 -c "
+          if [ -f TestResults/dashboard.json ]; then
+            COVERAGE=$(python3 -c "
           import json
-          with open('coverage.json') as f:
+          with open('TestResults/dashboard.json') as f:
               data = json.load(f)
-          targets = [t for t in data.get('targets', []) if 'CortexVision' in t.get('name', '') and 'Tests' not in t.get('name', '')]
-          if targets:
-              pct = targets[0].get('lineCoverage', 0) * 100
-              print(f'{pct:.1f}')
-          else:
-              print('0.0')
+          print(f'{data[\"coverage\"][\"percentage\"]:.1f}')
           ")
+          else
+            COVERAGE="0.0"
+          fi
           echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
           echo "Coverage: $COVERAGE%"
 
@@ -75,12 +79,4 @@ jobs:
         with:
           name: test-results
           path: TestResults/
-          retention-days: 30
-
-      - name: Upload coverage report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage-report
-          path: coverage.json
           retention-days: 30

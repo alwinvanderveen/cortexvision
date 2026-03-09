@@ -99,7 +99,7 @@ Als ontwikkelaar wil ik een browser-based test dashboard dat bij elke test run a
 
 ## UC-2: Xcode Project & Basis UI
 
-**Status:** `IN PROGRESS`
+**Status:** `DONE`
 
 ### Beschrijving
 Als gebruiker wil ik een macOS applicatie kunnen starten met een overzichtelijk hoofdvenster waarin ik kan kiezen tussen capture-modi (venster selectie of gebiedsselectie) en een preview kan zien van het resultaat, zodat ik een duidelijk startpunt heb voor het capturen van scherminhoud.
@@ -185,14 +185,28 @@ Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kun
 - [ ] Bij ontbrekende Screen Recording permissie: duidelijke foutmelding
 - [ ] ESC annuleert de selectie
 
-### Testcases
+### Testcases — Unit (draaien overal, ook CI)
 | ID | Beschrijving | Verwacht resultaat |
 |----|-------------|-------------------|
-| TC-3.1 | Capture venster van Finder | CGImage met correcte afmetingen van Finder venster |
-| TC-3.2 | Capture gebied van 500x300px | CGImage is exact 500x300 pixels |
-| TC-3.3 | Annuleer selectie met ESC | Geen capture, terug naar hoofdvenster |
-| TC-3.4 | Capture zonder Screen Recording permissie | Foutmelding met link naar System Settings |
-| TC-3.5 | Capture venster dat gedeeltelijk buiten scherm valt | Volledige vensterinhoud wordt gecaptured |
+| TC-3.1 | `ScreenCaptureKitProvider` conform `CaptureProvider` | Compileert en voldoet aan protocol |
+| TC-3.2 | `LocalPermissionManager` conform `PermissionManager` | Compileert en voldoet aan protocol |
+| TC-3.3 | ESC tijdens gebiedsselectie | State terug naar idle, geen capture |
+| TC-3.4 | CaptureState update na succesvolle capture | State is `.captured` met correcte dimensies |
+| TC-3.5 | Capture zonder Screen Recording permissie | Error state met duidelijke melding |
+
+### Testcases — Integration (alleen lokaal, vereist screen recording permissie)
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-3.10 | `availableWindows()` retourneert lijst | Niet-lege lijst met WindowInfo objecten die naam en app bevatten |
+| TC-3.11 | Capture venster van Finder, verifieer inhoud met OCR | CGImage met correcte afmetingen, OCR op resultaat herkent bekende Finder tekst (bijv. mapnamen) |
+| TC-3.12 | Capture gebied van 500x300px, verifieer dimensies en inhoud | CGImage is exact 500x300, bevat herkenbare pixels (niet volledig zwart/wit) |
+| TC-3.13 | Capture venster met bekende tekst, verifieer OCR output | Capture van venster met vooraf bepaalde tekst, Vision OCR retourneert >80% match |
+| TC-3.14 | Capture venster met bekende figuur, verifieer figuurdetectie | Capture van venster met afbeelding, rectangle detection vindt minimaal 1 figuur |
+
+### Teststrategie
+- **CI:** Unit tests (TC-3.1 t/m TC-3.5) draaien altijd. Integration tests worden overgeslagen via `.enabled(if: isScreenRecordingAvailable)`.
+- **Lokaal:** Alle tests draaien. Integration tests openen daadwerkelijk een referentie-venster met bekende inhoud (tekst + figuur), capturen dit, en verifiëren de output via OCR en figuurdetectie.
+- **Referentie-venster:** Een hulp-NSWindow met vooraf bepaalde tekst en een afbeelding, geopend door de test zelf. Dit voorkomt afhankelijkheid van externe apps.
 
 ---
 
