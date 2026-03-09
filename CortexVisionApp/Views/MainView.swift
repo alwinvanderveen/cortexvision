@@ -10,7 +10,9 @@ struct MainView: View {
             HSplitView {
                 PreviewPanel(
                     capturedImage: viewModel.capturedImage,
-                    captureState: viewModel.captureState
+                    captureState: viewModel.captureState,
+                    overlays: viewModel.analysisOverlays,
+                    imageSize: viewModel.imageSize
                 )
                 .frame(minWidth: 400)
 
@@ -19,7 +21,10 @@ struct MainView: View {
             }
 
             // Status bar
-            StatusBar(captureState: viewModel.captureState)
+            StatusBar(
+                captureState: viewModel.captureState,
+                screenRecordingGranted: viewModel.screenRecordingGranted
+            )
         }
         .toolbar {
             ToolbarItemGroup(placement: .principal) {
@@ -42,6 +47,34 @@ struct MainView: View {
                 .disabled(!viewModel.isExportAvailable)
                 .help(viewModel.isExportAvailable ? "Export results" : "Perform a capture and analysis first")
             }
+        }
+        .sheet(isPresented: $viewModel.showWindowPicker) {
+            WindowPicker(
+                windows: viewModel.availableWindows,
+                onSelect: { window in
+                    Task { await viewModel.captureSelectedWindow(window) }
+                },
+                onCancel: {
+                    viewModel.showWindowPicker = false
+                }
+            )
+        }
+        .alert(
+            "Permission Required",
+            isPresented: Binding(
+                get: { viewModel.permissionError != nil },
+                set: { if !$0 { viewModel.permissionError = nil } }
+            )
+        ) {
+            Button("Open System Settings") {
+                viewModel.openPermissionSettings()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(viewModel.permissionError ?? "")
+        }
+        .onExitCommand {
+            viewModel.cancelCapture()
         }
     }
 }

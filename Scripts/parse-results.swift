@@ -16,6 +16,7 @@ struct TestResult: Codable {
 
 struct TestCatalogEntry: Codable {
     let id: String
+    let category: String?
     let functional: String
     let technical: String
     let input: String
@@ -52,20 +53,6 @@ struct CoverageReport: Codable {
 
 // MARK: - Helpers
 
-func shell(_ command: String) -> (output: String, exitCode: Int32) {
-    let process = Process()
-    let pipe = Pipe()
-    process.executableURL = URL(fileURLWithPath: "/bin/bash")
-    process.arguments = ["-c", command]
-    process.standardOutput = pipe
-    process.standardError = FileHandle.nullDevice
-    try? process.run()
-    process.waitUntilExit()
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-    return (output, process.terminationStatus)
-}
-
 func loadTestCatalog(projectRoot: String) -> [String: TestCatalogEntry] {
     let catalogPath = "\(projectRoot)/TestCatalog.json"
     guard let data = FileManager.default.contents(atPath: catalogPath),
@@ -76,190 +63,195 @@ func loadTestCatalog(projectRoot: String) -> [String: TestCatalogEntry] {
     return catalog
 }
 
-// MARK: - Parse test-results tests (modern xcresulttool)
+// MARK: - Parse swift test output
 
-func parseTestResults(xcresultPath: String) -> [TestResult] {
-    let result = shell("""
-        xcrun xcresulttool get test-results tests --path "\(xcresultPath)" 2>/dev/null
-    """)
-
-    guard result.exitCode == 0,
-          let data = result.output.data(using: .utf8),
-          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        print("Error: Could not parse xcresult test results")
+/// Parses `swift test` stdout for test results.
+/// Lines look like:
+///   ✔ Test "test name" passed after 0.123 seconds.
+///   ✘ Test "test name" failed after 0.456 seconds with 1 issue.
+///   ◇ Suite "suite name" started.
+///   ✔ Suite "suite name" passed after 1.234 seconds.
+func parseSwiftTestOutput(path: String) -> [TestResult] {
+    guard let content = try? String(contentsOfFile: path, encoding: .utf8) else {
+        print("Error: Could not read test output from \(path)")
         return []
     }
 
+    let lines = content.components(separatedBy: .newlines)
+    var activeSuites: [String] = [] // stack of started suites
     var tests: [TestResult] = []
-    if let testNodes = json["testNodes"] as? [[String: Any]] {
-        for node in testNodes {
-            extractLeafTests(from: node, suiteName: "", into: &tests)
-        }
-    }
-    return tests
-}
-
-func extractLeafTests(from node: [String: Any], suiteName: String, into tests: inout [TestResult]) {
-    let name = node["name"] as? String ?? ""
-    let nodeType = node["nodeType"] as? String ?? ""
-    let children = node["children"] as? [[String: Any]] ?? []
-
-    if nodeType == "Test Case" {
-        let resultStr = node["result"] as? String ?? "Unknown"
-        let nodeId = node["nodeIdentifier"] as? String ?? ""
-        let tags = node["tags"] as? [String] ?? []
-
-        let status: String
-        switch resultStr.lowercased() {
-        case "passed": status = "PASS"
-        case "failed": status = "FAIL"
-        case "skipped": status = "SKIP"
-        case "expected failure": status = "XFAIL"
-        default: status = resultStr.uppercased()
-        }
-
-        tests.append(TestResult(
-            name: name,
-            suiteName: suiteName,
-            nodeIdentifier: nodeId,
-            status: status,
-            tags: tags,
-            message: nil,
-            catalog: nil
-        ))
-    } else {
-        let nextSuite = suiteName.isEmpty ? name : suiteName
-        // Use the most specific suite name (Test Suite level, not bundles/plans)
-        let passDown = nodeType == "Test Suite" ? name : nextSuite
-        for child in children {
-            extractLeafTests(from: child, suiteName: passDown, into: &tests)
-        }
-    }
-}
-
-// MARK: - Parse failure details
-
-func enrichWithFailures(tests: inout [TestResult], xcresultPath: String) {
-    let failedTests = tests.filter { $0.status == "FAIL" }
-    guard !failedTests.isEmpty else { return }
-
-    // Get summary which includes failure info
-    let result = shell("""
-        xcrun xcresulttool get test-results summary --path "\(xcresultPath)" 2>/dev/null
-    """)
-
-    guard result.exitCode == 0,
-          let data = result.output.data(using: .utf8),
-          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-        return
-    }
-
-    // Extract failure messages from summary
     var failureMessages: [String: String] = [:]
-    if let failures = json["failureSummaries"] as? [[String: Any]] {
-        for failure in failures {
-            let testName = failure["testName"] as? String ?? ""
-            let message = failure["message"] as? String ?? ""
-            failureMessages[testName] = message
+    var seen = Set<String>() // deduplicate tests (output may appear twice with tee)
+
+    for line in lines {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+
+        // Track suite starts/ends to determine which suite a test belongs to
+        if trimmed.contains("Suite \"") {
+            if let name = extractQuoted(from: trimmed) {
+                if trimmed.contains("started") {
+                    activeSuites.append(name)
+                } else if trimmed.contains("passed") || trimmed.contains("failed") {
+                    activeSuites.removeAll(where: { $0 == name })
+                }
+            }
+            continue
+        }
+
+        // Parse test results: ✔ Test "name" passed  or  ✘ Test "name" failed
+        if (trimmed.hasPrefix("✔") || trimmed.hasPrefix("✘")) && trimmed.contains("Test \"") {
+            guard let name = extractQuoted(from: trimmed) else { continue }
+            guard !seen.contains(name) else { continue }
+
+            let status: String
+            if trimmed.contains("passed") {
+                status = "PASS"
+            } else if trimmed.contains("failed") {
+                status = "FAIL"
+            } else if trimmed.contains("skipped") {
+                status = "SKIP"
+            } else {
+                continue
+            }
+
+            seen.insert(name)
+            // Use the most recently started suite that hasn't ended yet
+            let suite = activeSuites.last ?? ""
+            tests.append(TestResult(
+                name: name,
+                suiteName: suite,
+                nodeIdentifier: "\(suite)/\(name)",
+                status: status,
+                tags: [],
+                message: nil,
+                catalog: nil
+            ))
+        }
+
+        // Capture failure details (lines starting with ✘ that contain "recorded an issue")
+        if trimmed.hasPrefix("✘") && trimmed.contains("recorded an issue") {
+            if let name = extractQuoted(from: trimmed) {
+                if let colonRange = trimmed.range(of: "Expectation failed:") {
+                    let msg = String(trimmed[colonRange.lowerBound...])
+                    failureMessages[name] = (failureMessages[name].map { $0 + "; " } ?? "") + msg
+                }
+            }
         }
     }
 
-    tests = tests.map { test in
+    // Enrich with failure messages
+    return tests.map { test in
         if test.status == "FAIL", let msg = failureMessages[test.name] {
             return TestResult(
-                name: test.name,
-                suiteName: test.suiteName,
-                nodeIdentifier: test.nodeIdentifier,
-                status: test.status,
-                tags: test.tags,
-                message: msg,
-                catalog: test.catalog
+                name: test.name, suiteName: test.suiteName,
+                nodeIdentifier: test.nodeIdentifier, status: test.status,
+                tags: test.tags, message: msg, catalog: test.catalog
             )
         }
         return test
     }
 }
 
-// MARK: - Coverage
+/// Extract text between the first pair of double quotes.
+func extractQuoted(from string: String) -> String? {
+    guard let first = string.firstIndex(of: "\"") else { return nil }
+    let rest = string[string.index(after: first)...]
+    guard let second = rest.firstIndex(of: "\"") else { return nil }
+    return String(rest[..<second])
+}
 
-func extractCoverage(xcresultPath: String) -> CoverageReport {
-    let result = shell("xcrun xccov view --report --json \"\(xcresultPath)\" 2>/dev/null")
+// MARK: - Coverage from llvm-cov JSON
 
-    guard result.exitCode == 0,
-          let data = result.output.data(using: .utf8),
-          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+/// Parses the llvm-cov export JSON produced by `swift test --enable-code-coverage`.
+/// SPM writes this to .build/debug/codecov/<Package>.json automatically.
+func extractCoverage(jsonPath: String, projectRoot: String) -> CoverageReport {
+    guard let data = FileManager.default.contents(atPath: jsonPath),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let dataArray = json["data"] as? [[String: Any]],
+          let first = dataArray.first else {
+        print("Warning: Could not parse coverage JSON at \(jsonPath)")
         return CoverageReport(percentage: 0, threshold: 85, files: [])
     }
 
     var files: [CoverageFile] = []
-    var totalCoverage = 0.0
+    var totalCovered = 0
+    var totalExecutable = 0
 
-    if let targets = json["targets"] as? [[String: Any]] {
-        for target in targets {
-            let targetName = target["name"] as? String ?? ""
-            guard targetName.contains("CortexVision") && !targetName.contains("Tests") else { continue }
+    if let fileEntries = first["files"] as? [[String: Any]] {
+        for file in fileEntries {
+            let filename = file["filename"] as? String ?? ""
 
-            totalCoverage = (target["lineCoverage"] as? Double ?? 0) * 100
+            // Only include project source files, skip tests and system headers
+            guard filename.contains("/Sources/") else { continue }
 
-            if let sourceFiles = target["files"] as? [[String: Any]] {
-                for file in sourceFiles {
-                    let path = file["path"] as? String ?? ""
-                    let coverage = (file["lineCoverage"] as? Double ?? 0) * 100
-                    let covered = file["coveredLines"] as? Int ?? 0
-                    let executable = file["executableLines"] as? Int ?? 0
-                    files.append(CoverageFile(
-                        path: path,
-                        lineCoverage: coverage,
-                        coveredLines: covered,
-                        executableLines: executable
-                    ))
-                }
+            if let summary = file["summary"] as? [String: Any],
+               let lines = summary["lines"] as? [String: Any] {
+                let covered = lines["covered"] as? Int ?? 0
+                let count = lines["count"] as? Int ?? 0
+                let percent = lines["percent"] as? Double ?? 0
+
+                // Make path relative to project root
+                let relativePath = filename.hasPrefix(projectRoot)
+                    ? String(filename.dropFirst(projectRoot.count + 1))
+                    : filename
+
+                files.append(CoverageFile(
+                    path: relativePath,
+                    lineCoverage: percent,
+                    coveredLines: covered,
+                    executableLines: count
+                ))
+
+                totalCovered += covered
+                totalExecutable += count
             }
         }
     }
 
-    return CoverageReport(percentage: totalCoverage, threshold: 85, files: files)
+    let percentage = totalExecutable > 0
+        ? Double(totalCovered) / Double(totalExecutable) * 100
+        : 0
+
+    return CoverageReport(percentage: percentage, threshold: 85, files: files)
 }
 
 // MARK: - Main
 
 let args = CommandLine.arguments
-guard args.count >= 3 else {
-    print("Usage: parse-results.swift <xcresult-path> <output-dir> [project-root]")
+guard args.count >= 4 else {
+    print("Usage: parse-results.swift <test-output-file> <coverage-json> <output-dir> [project-root]")
     exit(1)
 }
 
-let xcresultPath = args[1]
-let outputDir = args[2]
-let projectRoot = args.count > 3 ? args[3] : FileManager.default.currentDirectoryPath
+let testOutputPath = args[1]
+let coverageJsonPath = args[2]
+let outputDir = args[3]
+let projectRoot = args.count > 4 ? args[4] : FileManager.default.currentDirectoryPath
 
 // Load test catalog
 let catalog = loadTestCatalog(projectRoot: projectRoot)
 
-// Parse test results using modern xcresulttool
-var tests = parseTestResults(xcresultPath: xcresultPath)
+// Parse test results from swift test output
+var tests = parseSwiftTestOutput(path: testOutputPath)
 
-// Enrich failed tests with error messages
-enrichWithFailures(tests: &tests, xcresultPath: xcresultPath)
-
-// Enrich with catalog metadata
+// Enrich with catalog metadata (catalog keys are test display names from @Test("..."))
 tests = tests.map { test in
-    let catalogEntry = catalog[test.nodeIdentifier]
-        ?? catalog.first(where: { test.nodeIdentifier.contains($0.key) || $0.key.contains(test.name) })?.value
+    let catalogEntry = catalog[test.name]
+        ?? catalog.first(where: { $0.key == test.nodeIdentifier })?.value
 
     return TestResult(
         name: test.name,
         suiteName: test.suiteName,
         nodeIdentifier: test.nodeIdentifier,
         status: test.status,
-        tags: test.tags,
+        tags: catalogEntry?.tags ?? test.tags,
         message: test.message,
         catalog: catalogEntry
     )
 }
 
 // Extract coverage
-let coverage = extractCoverage(xcresultPath: xcresultPath)
+let coverage = extractCoverage(jsonPath: coverageJsonPath, projectRoot: projectRoot)
 
 // Build summary
 let passed = tests.filter { $0.status == "PASS" }.count

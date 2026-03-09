@@ -59,11 +59,18 @@
     <!-- Filter Bar -->
     <section class="filter-bar">
       <h2>Test Results</h2>
-      <div class="filters">
-        <button class="filter-btn active" data-filter="all">All</button>
-        <button class="filter-btn" data-filter="PASS">Passed</button>
-        <button class="filter-btn" data-filter="FAIL">Failed</button>
-        <button class="filter-btn" data-filter="SKIP">Skipped</button>
+      <div class="filter-groups">
+        <div class="filters">
+          <span class="filter-label">Status</span>
+          <button class="filter-btn active" data-filter="all">All</button>
+          <button class="filter-btn" data-filter="PASS">Passed</button>
+          <button class="filter-btn" data-filter="FAIL">Failed</button>
+          <button class="filter-btn" data-filter="SKIP">Skipped</button>
+        </div>
+        <div class="filters" id="category-filters">
+          <span class="filter-label">Category</span>
+          <button class="cat-btn active" data-category="all">All</button>
+        </div>
       </div>
     </section>
 

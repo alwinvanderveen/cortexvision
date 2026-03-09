@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "CortexVision",
-    platforms: [.macOS(.v13)],
+    platforms: [.macOS(.v14)],
     products: [
         .library(name: "CortexVision", targets: ["CortexVision"]),
         .executable(name: "CortexVisionApp", targets: ["CortexVisionApp"]),
@@ -16,7 +16,8 @@ let package = Package(
         .executableTarget(
             name: "CortexVisionApp",
             dependencies: ["CortexVision"],
-            path: "CortexVisionApp"
+            path: "CortexVisionApp",
+            exclude: ["Resources/Info.plist"]
         ),
         .testTarget(
             name: "CortexVisionTests",

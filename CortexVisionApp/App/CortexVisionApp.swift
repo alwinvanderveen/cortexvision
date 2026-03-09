@@ -7,8 +7,20 @@ struct CortexVisionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MainView(viewModel: appViewModel)
-                .frame(minWidth: 800, minHeight: 600)
+            Group {
+                if appViewModel.hasCompletedOnboarding {
+                    MainView(viewModel: appViewModel)
+                } else {
+                    PermissionOnboardingView(
+                        viewModel: appViewModel,
+                        onContinue: { appViewModel.completeOnboarding() }
+                    )
+                }
+            }
+            .frame(minWidth: 800, minHeight: 600)
+            .onAppear {
+                appViewModel.checkPermissionsOnLaunch()
+            }
         }
         .defaultSize(width: 1100, height: 700)
         .commands {

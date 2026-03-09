@@ -144,7 +144,7 @@ Als gebruiker wil ik een macOS applicatie kunnen starten met een overzichtelijk 
 
 ## UC-3: Venster & Gebied Capture
 
-**Status:** `DRAFT`
+**Status:** `IN PROGRESS`
 
 ### Beschrijving
 Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kunnen selecteren en daar een screenshot van maken, zodat ik gericht inhoud kan capturen voor verdere analyse.
@@ -157,24 +157,48 @@ Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kun
 - Screen Recording permissie is verleend door gebruiker
 
 ### Flow — Venster selectie
-1. Gebruiker klikt "Selecteer Venster"
+1. Gebruiker klikt "Select Window"
 2. Lijst van beschikbare vensters verschijnt (met app-icoon en titel)
 3. Gebruiker kiest een venster
 4. Screenshot wordt gemaakt van het geselecteerde venster
-5. Resultaat verschijnt in het preview paneel
+5. Resultaat verschijnt in het preview paneel met overlay-laag, statusbalk toont dimensies
 
 ### Flow — Gebied selectie
-1. Gebruiker klikt "Selecteer Gebied"
+1. Gebruiker klikt "Select Region"
 2. Scherm dimt en crosshair cursor verschijnt
 3. Gebruiker tekent een rechthoek door te klikken en te slepen
 4. Geselecteerd gebied wordt gemarkeerd
 5. Bij loslaten wordt de capture gemaakt
-6. Resultaat verschijnt in het preview paneel
+6. Resultaat verschijnt in het preview paneel met overlay-laag
 
 ### Postcondities
 - Capture is beschikbaar als CGImage in het geheugen
-- Preview toont de capture op schaal
+- Preview toont de capture met een overlay-laag voor analyse-annotaties
 - Capture dimensies worden getoond in de statusbalk
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| ScreenCaptureKitProvider | `PRODUCTIE` | Concrete impl van CaptureProvider protocol. SCShareableContent + SCScreenshotManager. |
+| Vensterpicker UI | `PRODUCTIE` | SwiftUI sheet met SCShareableContent.windows, app-icoon, titel. |
+| Gebiedsselectie overlay | `PRODUCTIE` | Fullscreen NSWindow, crosshair, rubber-band, ESC-annulering. AppKit via coordinator. |
+| LocalPermissionManager | `PRODUCTIE` | Concrete impl van PermissionManager. CGPreflightScreenCaptureAccess / CGRequestScreenCaptureAccess. |
+| Preview met overlay-laag | `PRODUCTIE` (preview) + `SCAFFOLD` (overlay data) | De overlay-component accepteert `[AnalysisOverlay]` maar toont pas annotaties als UC-4/UC-5 data leveren. Component zelf is productie-code. |
+
+### Overlay-laag detail (SCAFFOLD onderdeel)
+- **Reden:** Analyse-data (tekst bounding boxes, figuur bounding boxes) komt uit UC-4 en UC-5 die nog niet geïmplementeerd zijn
+- **Huidige invulling:** Preview bevat een `AnalysisOverlayView` die een array van `AnalysisOverlay` items rendert. Array is leeg tot UC-4/UC-5 data leveren. Geen fake annotaties.
+- **Vervangplan:** UC-4 vult overlay met tekst-bounding boxes (blauw), UC-5 vult overlay met figuur-bounding boxes (groen)
+- **Data model (nu al gedefinieerd):**
+```swift
+struct AnalysisOverlay: Identifiable {
+    let id: UUID
+    let bounds: CGRect          // genormaliseerd 0..1
+    let kind: OverlayKind       // .text of .figure
+    let label: String?
+}
+enum OverlayKind { case text, figure }
+```
 
 ### Acceptatiecriteria
 - [ ] Vensterpicker toont alle zichtbare vensters met titel en icoon
@@ -182,8 +206,10 @@ Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kun
 - [ ] Gebiedsselectie overlay bedekt het hele scherm
 - [ ] Getekende rechthoek is visueel zichtbaar tijdens selectie
 - [ ] Capture wordt correct weergegeven in preview
-- [ ] Bij ontbrekende Screen Recording permissie: duidelijke foutmelding
+- [ ] Preview bevat overlay-laag die AnalysisOverlay items kan renderen
+- [ ] Bij ontbrekende Screen Recording permissie: duidelijke foutmelding met link naar System Settings
 - [ ] ESC annuleert de selectie
+- [ ] Statusbalk toont dimensies na capture
 
 ### Testcases — Unit (draaien overal, ook CI)
 | ID | Beschrijving | Verwacht resultaat |
@@ -193,20 +219,21 @@ Als gebruiker wil ik een specifiek venster of een zelf getekend schermgebied kun
 | TC-3.3 | ESC tijdens gebiedsselectie | State terug naar idle, geen capture |
 | TC-3.4 | CaptureState update na succesvolle capture | State is `.captured` met correcte dimensies |
 | TC-3.5 | Capture zonder Screen Recording permissie | Error state met duidelijke melding |
+| TC-3.6 | AnalysisOverlayView met lege array | Rendert zonder crash, geen zichtbare annotaties |
+| TC-3.7 | AnalysisOverlayView met test-items | Rendert bounding boxes op correcte posities |
 
 ### Testcases — Integration (alleen lokaal, vereist screen recording permissie)
 | ID | Beschrijving | Verwacht resultaat |
 |----|-------------|-------------------|
 | TC-3.10 | `availableWindows()` retourneert lijst | Niet-lege lijst met WindowInfo objecten die naam en app bevatten |
-| TC-3.11 | Capture venster van Finder, verifieer inhoud met OCR | CGImage met correcte afmetingen, OCR op resultaat herkent bekende Finder tekst (bijv. mapnamen) |
+| TC-3.11 | Capture referentie-venster met bekende tekst, verifieer via OCR | CGImage met correcte afmetingen, Vision OCR herkent "CortexVision Test Content ABC123" met >80% match |
 | TC-3.12 | Capture gebied van 500x300px, verifieer dimensies en inhoud | CGImage is exact 500x300, bevat herkenbare pixels (niet volledig zwart/wit) |
-| TC-3.13 | Capture venster met bekende tekst, verifieer OCR output | Capture van venster met vooraf bepaalde tekst, Vision OCR retourneert >80% match |
-| TC-3.14 | Capture venster met bekende figuur, verifieer figuurdetectie | Capture van venster met afbeelding, rectangle detection vindt minimaal 1 figuur |
+| TC-3.13 | Capture referentie-venster met bekende figuur, verifieer figuurdetectie | Rectangle detection vindt minimaal 1 figuur (het blauwe vierkant) |
 
 ### Teststrategie
-- **CI:** Unit tests (TC-3.1 t/m TC-3.5) draaien altijd. Integration tests worden overgeslagen via `.enabled(if: isScreenRecordingAvailable)`.
-- **Lokaal:** Alle tests draaien. Integration tests openen daadwerkelijk een referentie-venster met bekende inhoud (tekst + figuur), capturen dit, en verifiëren de output via OCR en figuurdetectie.
-- **Referentie-venster:** Een hulp-NSWindow met vooraf bepaalde tekst en een afbeelding, geopend door de test zelf. Dit voorkomt afhankelijkheid van externe apps.
+- **CI:** Unit tests (TC-3.1 t/m TC-3.7) draaien altijd. Integration tests worden overgeslagen via `.enabled(if: isScreenRecordingAvailable)`. `PRODUCTIE`
+- **Lokaal:** Alle tests draaien. Integration tests openen een **referentie-NSWindow** met vooraf bepaalde tekst ("CortexVision Test Content ABC123") en een blauw vierkant als test-figuur. De test captured dit venster en verifieert output via Vision OCR en rectangle detection. `PRODUCTIE`
+- **Geen afhankelijkheid van externe apps** — referentie-venster wordt door de test zelf aangemaakt
 
 ---
 

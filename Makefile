@@ -1,24 +1,25 @@
 SHELL := /bin/bash
-RESULT_BUNDLE := TestResults/results.xcresult
 OUTPUT_DIR := TestResults
 PROJECT_ROOT := $(shell pwd)
+COVERAGE_JSON := .build/debug/codecov/CortexVision.json
 
-.PHONY: test test-swift dashboard clean
+APP_BUNDLE := .build/CortexVision.app
 
-## Run tests with coverage and generate dashboard data
+.PHONY: test test-capture dashboard clean run app start
+
+## Run all tests (including capture) with coverage and generate dashboard data.
+## Uses swift test so the process inherits Terminal's screen recording permission.
 test:
-	@echo "==> Cleaning previous results..."
-	@rm -rf $(RESULT_BUNDLE)
-	@echo "==> Running tests..."
-	@set -o pipefail && xcodebuild test \
-		-scheme CortexVision-Package \
-		-destination 'platform=macOS' \
-		-enableCodeCoverage YES \
-		-resultBundlePath $(RESULT_BUNDLE) \
-		CODE_SIGNING_ALLOWED=NO \
-		2>&1 | tail -20
+	@echo "==> Running tests with coverage..."
+	@set -o pipefail && swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt | tail -60
 	@echo "==> Parsing results..."
-	@swift Scripts/parse-results.swift $(RESULT_BUNDLE) $(OUTPUT_DIR) $(PROJECT_ROOT)
+	@swift Scripts/parse-results.swift /tmp/cortexvision-test-output.txt $(COVERAGE_JSON) $(OUTPUT_DIR) $(PROJECT_ROOT)
+	@echo "==> Done."
+
+## Run only capture & verification tests
+test-capture:
+	@echo "==> Running capture verification tests..."
+	@swift test --filter "CaptureVerificationTests|CaptureIntegrationTests" 2>&1 | tail -40
 	@echo "==> Done."
 
 ## Build only (no tests)
@@ -26,6 +27,35 @@ build:
 	@echo "==> Building..."
 	@swift build 2>&1 | tail -10
 	@echo "==> Done."
+
+## Build .app bundle and launch (kills existing instance first)
+run: app
+	@pkill -x CortexVisionApp 2>/dev/null && echo "==> Stopped previous instance." && sleep 0.5 || true
+	@echo "==> Launching CortexVision.app..."
+	@open $(APP_BUNDLE)
+
+## Launch the last built app bundle without rebuilding
+start:
+	@pkill -x CortexVisionApp 2>/dev/null && echo "==> Stopped previous instance." && sleep 0.5 || true
+	@echo "==> Launching CortexVision.app..."
+	@open $(APP_BUNDLE)
+
+## Build a proper .app bundle (required for System Settings visibility)
+app: build
+	@echo "==> Creating app bundle..."
+	@mkdir -p $(APP_BUNDLE)/Contents/MacOS
+	@mkdir -p $(APP_BUNDLE)/Contents/Resources
+	@cp .build/debug/CortexVisionApp $(APP_BUNDLE)/Contents/MacOS/CortexVisionApp
+	@cp CortexVisionApp/Resources/Info.plist $(APP_BUNDLE)/Contents/Resources/Info.plist
+	@# PkgInfo marks this as an application bundle
+	@echo -n "APPL????" > $(APP_BUNDLE)/Contents/PkgInfo
+	@# Info.plist at Contents/ level (macOS convention)
+	@cp CortexVisionApp/Resources/Info.plist $(APP_BUNDLE)/Contents/Info.plist
+	@# Reset screen recording permission for this bundle after rebuild
+	@# (new binary = new code signature, old toggle becomes stale)
+	@echo "==> Resetting screen recording permission for CortexVision..."
+	@tccutil reset ScreenCapture nl.cortexvision.app 2>/dev/null || true
+	@echo "==> App bundle created at $(APP_BUNDLE)"
 
 ## Start the test dashboard
 dashboard:

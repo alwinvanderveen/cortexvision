@@ -82,6 +82,27 @@ Elke test run — door de gebruiker of door Claude — MOET via `make test` word
 - **NOOIT** tests draaien op een manier die de dashboard pipeline omzeilt.
 - Na elke `make test` run: vermeld kort het resultaat (aantal tests, pass/fail, coverage) zodat de gebruiker weet dat de run is geregistreerd.
 
+## HARDE GATE 5: Regressietests bij Bugfixes
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+Elke bugfix, bevinding of incident MOET vergezeld gaan van testgevallen die:
+1. **De oorzaak reproduceren** — een test die zou falen vóór de fix
+2. **De fix verifiëren** — dezelfde test slaagt na de fix
+3. **Regressie borgen** — de test voorkomt dat het probleem in de toekomst terugkeert
+
+### Regels
+- **GEEN fix zonder test.** Elke code-aanpassing naar aanleiding van een bevinding moet minimaal één bijbehorend testgeval hebben.
+- **Logica extraheren indien nodig.** Als de buggy code niet testbaar is (bijv. diep in UI of async systeem-calls), extraheer de relevante logica naar een publieke, testbare functie.
+- **TestCatalog.json bijwerken.** Elk nieuw testgeval moet worden toegevoegd aan het catalogusbestand met functional/technical beschrijving, input en expected output.
+- **`make test` draaien na de fix** (conform Gate 4) om te bevestigen dat de nieuwe test slaagt en bestaande tests niet breken.
+
+### Voorbeeld
+> Bevinding: Region capture faalt met "invalid parameter" door verkeerde coördinaten.
+> → Logica geëxtraheerd naar `flipAndClampRect()` (testbare pure functie)
+> → 6 testgevallen toegevoegd: Y-flip, clamping, off-screen, zero-display, full-screen
+> → `make test` bevestigt: alle tests PASS
+
 ## Overige regels
 
 - Code in het Engels, UI labels in het Engels, comments in het Engels

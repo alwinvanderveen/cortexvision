@@ -1,6 +1,7 @@
 const POLL_INTERVAL = 1500;
 let lastTimestamp = null;
 let currentFilter = 'all';
+let currentCategory = 'all';
 const expandedTests = new Set();
 
 async function fetchJSON(path) {
@@ -64,7 +65,7 @@ function renderCoverage(coverage) {
   const angle = (pct / 100) * Math.PI;
   const endX = 100 - 80 * Math.cos(angle);
   const endY = 100 - 80 * Math.sin(angle);
-  const largeArc = pct > 50 ? 1 : 0;
+  const largeArc = 0; // Always short arc — fill never exceeds the 180° semicircle
 
   const fill = document.getElementById('gauge-fill');
   fill.setAttribute('d', `M20,100 A80,80 0 ${largeArc},1 ${endX},${endY}`);
@@ -100,9 +101,40 @@ function renderCoverage(coverage) {
   container.innerHTML = html;
 }
 
+function getCategory(test) {
+  return test.catalog?.category || test.suiteName || 'Uncategorized';
+}
+
+function categoryClass(category) {
+  return 'cat-' + category.toLowerCase().replace(/[^a-z]/g, '');
+}
+
+function renderCategoryFilters(tests) {
+  const categories = [...new Set(tests.map(getCategory))].sort();
+  const container = document.getElementById('category-filters');
+  let html = '<span class="filter-label">Category</span>';
+  html += `<button class="cat-btn ${currentCategory === 'all' ? 'active' : ''}" data-category="all">All</button>`;
+  for (const cat of categories) {
+    html += `<button class="cat-btn ${currentCategory === cat ? 'active' : ''}" data-category="${cat}">${cat}</button>`;
+  }
+  container.innerHTML = html;
+
+  container.querySelectorAll('.cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      container.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentCategory = btn.dataset.category;
+      if (cachedData) renderTests(cachedData.tests);
+    });
+  });
+}
+
 function renderTests(tests) {
   const container = document.getElementById('test-results');
-  const filtered = currentFilter === 'all' ? tests : tests.filter(t => t.status === currentFilter);
+  let filtered = currentFilter === 'all' ? tests : tests.filter(t => t.status === currentFilter);
+  if (currentCategory !== 'all') {
+    filtered = filtered.filter(t => getCategory(t) === currentCategory);
+  }
 
   if (filtered.length === 0) {
     container.innerHTML = '<div class="empty">No tests match the current filter</div>';
@@ -125,11 +157,13 @@ function renderTests(tests) {
       const testKey = test.nodeIdentifier || `${test.suiteName}/${test.name}`;
       const isExpanded = expandedTests.has(testKey) || (test.status === 'FAIL' && !expandedTests.has(`_dismissed_${testKey}`));
 
+      const cat = getCategory(test);
       html += `
         <div class="test-card ${test.status.toLowerCase()} ${isExpanded ? 'expanded' : ''}" data-status="${test.status}" data-test-key="${testKey}">
           <div class="test-header">
             ${statusIcon(test.status)}
             <span class="test-name">${test.name}</span>
+            <span class="category-badge ${categoryClass(cat)}">${cat}</span>
             ${hasCatalog ? `<span class="test-id">${test.catalog.id}</span>` : ''}
           </div>
           <div class="test-details ${isExpanded ? 'show' : ''}">
@@ -289,6 +323,7 @@ async function refresh() {
       document.getElementById('timestamp').textContent = formatTimestamp(data.timestamp);
       renderSummary(data.summary);
       renderCoverage(data.coverage);
+      renderCategoryFilters(data.tests);
       renderTests(data.tests);
 
       if (history) {
