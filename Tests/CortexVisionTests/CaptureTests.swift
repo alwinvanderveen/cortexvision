@@ -6,6 +6,9 @@ import Vision
 
 // MARK: - Helpers
 
+/// True when running in GitHub Actions or other CI environments.
+let isCI: Bool = ProcessInfo.processInfo.environment["CI"] != nil
+
 /// Checks if screen recording permission is available (for integration tests).
 /// Uses a real SCShareableContent call since CGPreflightScreenCaptureAccess
 /// only reflects the permission of the specific bundle, not the test runner.

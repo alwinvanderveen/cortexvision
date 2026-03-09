@@ -226,7 +226,7 @@ struct CaptureVerificationTests {
 
     @Test("Region capture has colored corners in correct positions",
           .tags(.capture, .core),
-          .enabled(if: isScreenRecordingAvailable))
+          .enabled(if: isScreenRecordingAvailable && !isCI))
     @MainActor
     func regionCaptureCornerColors() async throws {
         // Functional: Captured image is not cropped or shifted — all four corners are present

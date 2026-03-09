@@ -23,14 +23,18 @@ jobs:
         run: swift build
 
       - name: Run tests with coverage
+        id: tests
         run: |
           set -o pipefail
           swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt
+        continue-on-error: true
 
       - name: Parse results for dashboard
         if: always()
         run: |
           mkdir -p TestResults
+          echo "Coverage JSON files:"
+          ls -la .build/debug/codecov/ 2>/dev/null || echo "No codecov directory found"
           swift Scripts/parse-results.swift \
             /tmp/cortexvision-test-output.txt \
             .build/debug/codecov/CortexVision.json \
@@ -54,7 +58,15 @@ jobs:
           echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
           echo "Coverage: $COVERAGE%"
 
+      - name: Check test results
+        run: |
+          if [ "${{ steps.tests.outcome }}" != "success" ]; then
+            echo "FAIL: Some tests failed"
+            exit 1
+          fi
+
       - name: Check coverage threshold
+        if: always()
         run: |
           COVERAGE=${{ steps.coverage.outputs.percentage }}
           echo "Coverage: ${COVERAGE}% (threshold: ${COVERAGE_THRESHOLD}%)"
