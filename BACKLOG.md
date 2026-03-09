@@ -403,14 +403,46 @@ Als gebruiker wil ik de herkende tekst als geformateerd Markdown-bestand en de f
 ## Implementatievolgorde
 
 ```
-UC-0 [DONE] ──► UC-1 [DRAFT] ──► UC-2 [DRAFT] ──► UC-3 [DRAFT]
-                                                        │
-                                                        ▼
-                                  UC-7 [DRAFT] ◄── UC-5 [DRAFT]
-                                       ▲            │
-                                       │            ▼
-                                  UC-6 [DRAFT]  UC-4 [DRAFT]
+UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DRAFT] ──► UC-3 [DRAFT]
+                                                       │
+                                                       ▼
+                                 UC-7 [DRAFT] ◄── UC-5 [DRAFT]
+                                      ▲            │
+                                      │            ▼
+                                 UC-6 [DRAFT]  UC-4 [DRAFT]
+                                                       │
+                                                       ▼
+                                              UC-8 [BACKLOG] (App Store)
 ```
 
 UC-4 en UC-5 kunnen deels parallel worden ontwikkeld na UC-3.
 UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-4+UC-5.
+
+---
+
+## UC-8: App Store Distributie (TOEKOMSTIG)
+
+**Status:** `BACKLOG`
+
+> **Dit is een toekomstige use case.** Wordt pas opgepakt nadat UC-1 t/m UC-7 zijn
+> afgerond en de lokale versie compleet en stabiel is. Zie `technical-debt.md` in
+> memory voor het volledige overzicht van benodigde aanpassingen.
+
+### Beschrijving
+Als ontwikkelaar wil ik de applicatie via de Mac App Store kunnen distribueren zodat gebruikers de app eenvoudig kunnen vinden, installeren en updaten.
+
+### Vereiste aanpassingen
+1. **App Sandbox activeren** (TD-1) — entitlements configureren
+2. **Scrolling capture herontwerpen** (TD-2) — Accessibility API vervangen door ScreenCaptureKit SCStream + user-gestuurd scrollen. `AccessibilityScrollCapture` → `StreamScrollCapture` achter bestaand `ScrollCaptureProvider` protocol
+3. **Export sandboxen** (TD-1) — `FileSystemExport` → `SandboxedExport` via NSSavePanel, achter bestaand `ExportDestination` protocol
+4. **Minimum deployment target verhogen** naar macOS 15 (TD-3)
+5. **Privacy descriptions toevoegen** aan Info.plist (TD-4)
+6. **Code signing & notarization** configureren (TD-5)
+
+### Ontkoppelingsprotocollen (ingebouwd vanaf UC-2)
+| Protocol | Lokale impl | App Store impl |
+|----------|------------|----------------|
+| `CaptureProvider` | `ScreenCaptureKitProvider` | Zelfde |
+| `ScrollCaptureProvider` | `AccessibilityScrollCapture` | `StreamScrollCapture` |
+| `ExportDestination` | `FileSystemExport` | `SandboxedExport` |
+| `PermissionManager` | `LocalPermissionManager` | `SandboxPermissionManager` |
