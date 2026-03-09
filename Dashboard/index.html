@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CortexVision — Test Dashboard</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <header>
+    <div class="header-content">
+      <h1>CortexVision <span class="subtitle">Test Dashboard</span></h1>
+      <div class="header-meta">
+        <span id="timestamp" class="meta-badge">—</span>
+        <span id="auto-refresh" class="meta-badge refresh-active">AUTO-REFRESH</span>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <!-- Summary Cards -->
+    <section class="summary-cards">
+      <div class="card card-total">
+        <div class="card-value" id="total-count">—</div>
+        <div class="card-label">Total Tests</div>
+      </div>
+      <div class="card card-pass">
+        <div class="card-value" id="pass-count">—</div>
+        <div class="card-label">Passed</div>
+      </div>
+      <div class="card card-fail">
+        <div class="card-value" id="fail-count">—</div>
+        <div class="card-label">Failed</div>
+      </div>
+      <div class="card card-skip">
+        <div class="card-value" id="skip-count">—</div>
+        <div class="card-label">Skipped</div>
+      </div>
+      <div class="card card-duration">
+        <div class="card-value" id="duration">—</div>
+        <div class="card-label">Duration</div>
+      </div>
+    </section>
+
+    <!-- Coverage Gauge -->
+    <section class="coverage-section">
+      <h2>Code Coverage</h2>
+      <div class="coverage-gauge-container">
+        <svg class="coverage-gauge" viewBox="0 0 200 120">
+          <path class="gauge-bg" d="M20,100 A80,80 0 0,1 180,100" />
+          <path class="gauge-fill" id="gauge-fill" d="M20,100 A80,80 0 0,1 180,100" />
+          <text class="gauge-text" id="gauge-text" x="100" y="90" text-anchor="middle">—%</text>
+          <text class="gauge-threshold" x="100" y="110" text-anchor="middle">Threshold: 85%</text>
+        </svg>
+      </div>
+      <div class="coverage-files" id="coverage-files"></div>
+    </section>
+
+    <!-- Filter Bar -->
+    <section class="filter-bar">
+      <h2>Test Results</h2>
+      <div class="filters">
+        <button class="filter-btn active" data-filter="all">All</button>
+        <button class="filter-btn" data-filter="PASS">Passed</button>
+        <button class="filter-btn" data-filter="FAIL">Failed</button>
+        <button class="filter-btn" data-filter="SKIP">Skipped</button>
+      </div>
+    </section>
+
+    <!-- Test Results -->
+    <section class="test-results" id="test-results">
+      <div class="loading">Waiting for test data...<br><code>Run <strong>make test</strong> to generate results</code></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>CortexVision Test Dashboard — Auto-refreshes on new test runs</p>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

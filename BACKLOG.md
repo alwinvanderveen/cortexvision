@@ -54,7 +54,7 @@ Als ontwikkelaar wil ik een werkend project met versiebeheer en continuous integ
 
 ## UC-1: Test Infrastructure & Dashboard
 
-**Status:** `DRAFT`
+**Status:** `DONE`
 
 ### Beschrijving
 Als ontwikkelaar wil ik een browser-based test dashboard dat bij elke test run automatisch ververst en per testcase de functionele beschrijving, technische beschrijving, input, verwachte output, werkelijke output en resultaat toont, zodat ik conform TDD inzicht heb in de kwaliteit van het systeem.

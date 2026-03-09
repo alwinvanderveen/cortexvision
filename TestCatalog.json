@@ -1,0 +1,10 @@
+{
+  "CortexVisionCoreTests/versionIsDefined()": {
+    "id": "TC-0.1",
+    "functional": "Application reports a valid version string so users and logs can identify the running version",
+    "technical": "CortexVision.version returns a non-empty string in semantic version format (X.Y.Z)",
+    "input": "None",
+    "expectedOutput": "Non-empty string containing at least one dot (e.g. \"0.1.0\")",
+    "tags": ["core"]
+  }
+}
