@@ -6,5 +6,149 @@
     "input": "None",
     "expectedOutput": "Non-empty string containing at least one dot (e.g. \"0.1.0\")",
     "tags": ["core"]
+  },
+  "CaptureModeTests/allModesHaveLabel()": {
+    "id": "TC-2.4a",
+    "functional": "Each capture mode displays a descriptive label in the toolbar",
+    "technical": "CaptureMode.allCases each return a non-empty label string",
+    "input": "All CaptureMode cases",
+    "expectedOutput": "Each label is non-empty",
+    "tags": ["core", "ui"]
+  },
+  "CaptureModeTests/allModesHaveSystemImage()": {
+    "id": "TC-2.4b",
+    "functional": "Each capture mode displays an icon in the toolbar using SF Symbols",
+    "technical": "CaptureMode.allCases each return a valid SF Symbol name string",
+    "input": "All CaptureMode cases",
+    "expectedOutput": "Each systemImage is non-empty",
+    "tags": ["core", "ui"]
+  },
+  "CaptureModeTests/threeModes()": {
+    "id": "TC-2.4c",
+    "functional": "The app offers exactly three capture modes: window, region, scrolling",
+    "technical": "CaptureMode.allCases.count == 3",
+    "input": "CaptureMode.allCases",
+    "expectedOutput": "Count is 3",
+    "tags": ["core"]
+  },
+  "CaptureModeTests/uniqueIdentifiers()": {
+    "id": "TC-2.4d",
+    "functional": "Toolbar can distinguish between modes for correct selection state",
+    "technical": "CaptureMode.id values are unique across all cases",
+    "input": "All CaptureMode cases",
+    "expectedOutput": "All id values are distinct",
+    "tags": ["core"]
+  },
+  "CaptureStateTests/idleStatusText()": {
+    "id": "TC-2.1a",
+    "functional": "Status bar shows 'No capture' when app has not captured anything",
+    "technical": "CaptureState.idle.statusText returns 'No capture'",
+    "input": "CaptureState.idle",
+    "expectedOutput": "\"No capture\"",
+    "tags": ["core", "ui"]
+  },
+  "CaptureStateTests/capturingStatusText()": {
+    "id": "TC-2.1b",
+    "functional": "Status bar indicates capture is in progress",
+    "technical": "CaptureState.capturing.statusText contains 'Capturing'",
+    "input": "CaptureState.capturing",
+    "expectedOutput": "\"Capturing...\"",
+    "tags": ["core"]
+  },
+  "CaptureStateTests/capturedStatusText()": {
+    "id": "TC-2.1c",
+    "functional": "After capture, status bar shows image dimensions",
+    "technical": "CaptureState.captured(width:height:).statusText contains dimensions",
+    "input": "CaptureState.captured(width: 1920, height: 1080)",
+    "expectedOutput": "String containing '1920' and '1080'",
+    "tags": ["core"]
+  },
+  "CaptureStateTests/analyzedStatusText()": {
+    "id": "TC-2.1d",
+    "functional": "After analysis, status bar shows word and figure counts",
+    "technical": "CaptureState.analyzed.statusText contains word and figure counts",
+    "input": "CaptureState.analyzed(wordCount: 42, figureCount: 3)",
+    "expectedOutput": "String containing '42' and '3'",
+    "tags": ["core"]
+  },
+  "CaptureStateTests/errorStatusText()": {
+    "id": "TC-2.1e",
+    "functional": "Status bar shows error description when something goes wrong",
+    "technical": "CaptureState.error.statusText contains the error message",
+    "input": "CaptureState.error(\"Permission denied\")",
+    "expectedOutput": "String containing 'Permission denied'",
+    "tags": ["core"]
+  },
+  "ProtocolTests/captureProviderExists()": {
+    "id": "TC-2.6a",
+    "functional": "System can accept any capture implementation via protocol abstraction",
+    "technical": "CaptureProvider protocol compiles and can be referenced as existential type",
+    "input": "Protocol type reference",
+    "expectedOutput": "Compiles without error",
+    "tags": ["core"]
+  },
+  "ProtocolTests/scrollCaptureProviderExists()": {
+    "id": "TC-2.6b",
+    "functional": "System can accept any scroll capture implementation via protocol abstraction",
+    "technical": "ScrollCaptureProvider protocol compiles and can be referenced",
+    "input": "Protocol type reference",
+    "expectedOutput": "Compiles without error",
+    "tags": ["core"]
+  },
+  "ProtocolTests/exportDestinationExists()": {
+    "id": "TC-2.6c",
+    "functional": "System can accept any export implementation via protocol abstraction",
+    "technical": "ExportDestination protocol compiles and can be referenced",
+    "input": "Protocol type reference",
+    "expectedOutput": "Compiles without error",
+    "tags": ["core", "export"]
+  },
+  "ProtocolTests/permissionManagerExists()": {
+    "id": "TC-2.6d",
+    "functional": "System can accept any permission manager implementation via protocol",
+    "technical": "PermissionManager protocol compiles and can be referenced",
+    "input": "Protocol type reference",
+    "expectedOutput": "Compiles without error",
+    "tags": ["core"]
+  },
+  "ProtocolTests/captureResultConstruction()": {
+    "id": "TC-2.6e",
+    "functional": "A capture result carries the image, target and timestamp",
+    "technical": "CaptureResult init accepts CGImage, CaptureTarget, Date",
+    "input": "CaptureTarget.region with CGRect(0,0,100,100)",
+    "expectedOutput": "rect.width == 100, rect.height == 100",
+    "tags": ["core"]
+  },
+  "ProtocolTests/exportConfigurationURLs()": {
+    "id": "TC-2.6f",
+    "functional": "Export knows where to write markdown and figure files",
+    "technical": "ExportConfiguration.markdownURL and figuresDirectoryURL are derived correctly",
+    "input": "destinationURL=/tmp/test, baseName=\"capture\"",
+    "expectedOutput": "markdownURL ends with capture.md, figuresDirectoryURL ends with figures",
+    "tags": ["core", "export"]
+  },
+  "ProtocolTests/scrollProgressEstimation()": {
+    "id": "TC-2.6g",
+    "functional": "During scrolling capture, user sees progress percentage",
+    "technical": "ScrollCaptureProgress.estimatedProgress computes correct fraction",
+    "input": "3 of 10 frames captured",
+    "expectedOutput": "estimatedProgress == 0.3",
+    "tags": ["core"]
+  },
+  "ProtocolTests/scrollProgressUnknownTotal()": {
+    "id": "TC-2.6h",
+    "functional": "Progress is nil when total frames is unknown during scrolling capture",
+    "technical": "ScrollCaptureProgress.estimatedProgress returns nil when total is nil",
+    "input": "5 frames captured, total unknown",
+    "expectedOutput": "estimatedProgress is nil",
+    "tags": ["core"]
+  },
+  "ProtocolTests/permissionStatusCases()": {
+    "id": "TC-2.6i",
+    "functional": "System can represent all possible OS permission states",
+    "technical": "PermissionStatus has granted, denied, notDetermined, restricted cases",
+    "input": "All PermissionStatus values",
+    "expectedOutput": "4 distinct values",
+    "tags": ["core"]
   }
 }

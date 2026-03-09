@@ -11,7 +11,7 @@ test:
 	@rm -rf $(RESULT_BUNDLE)
 	@echo "==> Running tests..."
 	@set -o pipefail && xcodebuild test \
-		-scheme CortexVision \
+		-scheme CortexVision-Package \
 		-destination 'platform=macOS' \
 		-enableCodeCoverage YES \
 		-resultBundlePath $(RESULT_BUNDLE) \
@@ -21,10 +21,10 @@ test:
 	@swift Scripts/parse-results.swift $(RESULT_BUNDLE) $(OUTPUT_DIR) $(PROJECT_ROOT)
 	@echo "==> Done."
 
-## Run tests via swift test (fallback, no xcresult)
-test-swift:
-	@echo "==> Running swift test..."
-	@swift test --enable-code-coverage 2>&1 | tail -20
+## Build only (no tests)
+build:
+	@echo "==> Building..."
+	@swift build 2>&1 | tail -10
 	@echo "==> Done."
 
 ## Start the test dashboard

@@ -6,11 +6,17 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .library(name: "CortexVision", targets: ["CortexVision"]),
+        .executable(name: "CortexVisionApp", targets: ["CortexVisionApp"]),
     ],
     targets: [
         .target(
             name: "CortexVision",
             path: "Sources/CortexVision"
+        ),
+        .executableTarget(
+            name: "CortexVisionApp",
+            dependencies: ["CortexVision"],
+            path: "CortexVisionApp"
         ),
         .testTarget(
             name: "CortexVisionTests",

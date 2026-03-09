@@ -1,10 +1,11 @@
 const POLL_INTERVAL = 1500;
 let lastTimestamp = null;
 let currentFilter = 'all';
+const expandedTests = new Set();
 
-async function fetchDashboard() {
+async function fetchJSON(path) {
   try {
-    const res = await fetch('/dashboard.json?' + Date.now());
+    const res = await fetch(`/api/${path}?_=${Date.now()}`);
     if (!res.ok) return null;
     return await res.json();
   } catch {
@@ -13,6 +14,7 @@ async function fetchDashboard() {
 }
 
 function formatDuration(seconds) {
+  if (seconds == null) return '—';
   if (seconds < 1) return `${Math.round(seconds * 1000)}ms`;
   return `${seconds.toFixed(2)}s`;
 }
@@ -25,10 +27,17 @@ function formatTimestamp(isoString) {
   });
 }
 
+function formatShortTime(isoString) {
+  const d = new Date(isoString);
+  return d.toLocaleString('nl-NL', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit'
+  });
+}
+
 function getCoverageColor(pct, threshold) {
-  if (pct >= threshold) return '#34d399';      // green
-  if (pct >= threshold - 10) return '#fbbf24';  // orange
-  return '#f87171';                              // red
+  if (pct >= threshold) return '#34d399';
+  if (pct >= threshold - 10) return '#fbbf24';
+  return '#f87171';
 }
 
 function statusIcon(status) {
@@ -52,8 +61,6 @@ function renderCoverage(coverage) {
   const pct = coverage.percentage;
   const color = getCoverageColor(pct, coverage.threshold);
 
-  // Gauge arc: 0% = full left, 100% = full right
-  // Arc from (20,100) to (180,100), radius 80
   const angle = (pct / 100) * Math.PI;
   const endX = 100 - 80 * Math.cos(angle);
   const endY = 100 - 80 * Math.sin(angle);
@@ -67,7 +74,6 @@ function renderCoverage(coverage) {
   text.textContent = `${pct.toFixed(1)}%`;
   text.style.fill = color;
 
-  // File coverage table
   const container = document.getElementById('coverage-files');
   if (coverage.files.length === 0) {
     container.innerHTML = '<p class="muted">No file coverage data available</p>';
@@ -76,9 +82,7 @@ function renderCoverage(coverage) {
 
   let html = `
     <table class="coverage-table">
-      <thead>
-        <tr><th>File</th><th>Coverage</th><th>Lines</th></tr>
-      </thead>
+      <thead><tr><th>File</th><th>Coverage</th><th>Lines</th></tr></thead>
       <tbody>
   `;
   for (const file of coverage.files) {
@@ -105,7 +109,6 @@ function renderTests(tests) {
     return;
   }
 
-  // Group by suite
   const suites = {};
   for (const test of filtered) {
     const suite = test.suiteName || 'Ungrouped';
@@ -119,17 +122,17 @@ function renderTests(tests) {
 
     for (const test of suiteTests) {
       const hasCatalog = test.catalog != null;
-      const expanded = test.status === 'FAIL';
+      const testKey = test.nodeIdentifier || `${test.suiteName}/${test.name}`;
+      const isExpanded = expandedTests.has(testKey) || (test.status === 'FAIL' && !expandedTests.has(`_dismissed_${testKey}`));
 
       html += `
-        <div class="test-card ${test.status.toLowerCase()}" data-status="${test.status}">
-          <div class="test-header" onclick="this.parentElement.classList.toggle('expanded')">
+        <div class="test-card ${test.status.toLowerCase()} ${isExpanded ? 'expanded' : ''}" data-status="${test.status}" data-test-key="${testKey}">
+          <div class="test-header">
             ${statusIcon(test.status)}
             <span class="test-name">${test.name}</span>
             ${hasCatalog ? `<span class="test-id">${test.catalog.id}</span>` : ''}
-            <span class="test-duration">${formatDuration(test.duration)}</span>
           </div>
-          <div class="test-details ${expanded ? 'show' : ''}">
+          <div class="test-details ${isExpanded ? 'show' : ''}">
             ${hasCatalog ? `
               <div class="detail-grid">
                 <div class="detail-item">
@@ -171,6 +174,91 @@ function renderTests(tests) {
   }
 
   container.innerHTML = html;
+
+  // Attach click handlers via event delegation
+  container.querySelectorAll('.test-header').forEach(header => {
+    header.addEventListener('click', () => {
+      const card = header.parentElement;
+      const key = card.dataset.testKey;
+      if (expandedTests.has(key)) {
+        expandedTests.delete(key);
+        card.classList.remove('expanded');
+        card.querySelector('.test-details').classList.remove('show');
+      } else {
+        expandedTests.add(key);
+        expandedTests.delete(`_dismissed_${key}`);
+        card.classList.add('expanded');
+        card.querySelector('.test-details').classList.add('show');
+      }
+    });
+  });
+}
+
+function renderHistory(history) {
+  const container = document.getElementById('run-history');
+  if (!history || history.length === 0) {
+    container.innerHTML = '<p class="muted">No previous runs recorded</p>';
+    return;
+  }
+
+  // Show most recent first, max 20
+  const runs = history.slice(-20).reverse();
+
+  let html = `
+    <table class="history-table">
+      <thead>
+        <tr>
+          <th>Run</th>
+          <th>Time</th>
+          <th>Total</th>
+          <th>Pass</th>
+          <th>Fail</th>
+          <th>Skip</th>
+          <th>Coverage</th>
+          <th>Trend</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  for (let i = 0; i < runs.length; i++) {
+    const run = runs[i];
+    const prevRun = runs[i + 1];
+    const isLatest = i === 0;
+    const allPass = run.summary.failed === 0;
+    const coverageColor = getCoverageColor(run.coveragePercentage, 85);
+
+    // Coverage trend
+    let trend = '';
+    if (prevRun) {
+      const diff = run.coveragePercentage - prevRun.coveragePercentage;
+      if (Math.abs(diff) > 0.01) {
+        const arrow = diff > 0 ? '↑' : '↓';
+        const trendColor = diff > 0 ? '#34d399' : '#f87171';
+        trend = `<span style="color:${trendColor}">${arrow} ${Math.abs(diff).toFixed(1)}%</span>`;
+      } else {
+        trend = '<span class="muted">—</span>';
+      }
+    } else {
+      trend = '<span class="muted">—</span>';
+    }
+
+    html += `
+      <tr class="${isLatest ? 'history-latest' : ''} ${!allPass ? 'history-has-failures' : ''}">
+        <td>${isLatest ? '<strong>#' + history.length + '</strong>' : '#' + (history.length - i)}</td>
+        <td>${formatShortTime(run.timestamp)}</td>
+        <td>${run.summary.total}</td>
+        <td class="pass-cell">${run.summary.passed}</td>
+        <td class="${run.summary.failed > 0 ? 'fail-cell' : ''}">${run.summary.failed}</td>
+        <td>${run.summary.skipped}</td>
+        <td><span class="coverage-badge" style="background:${coverageColor}">${run.coveragePercentage.toFixed(1)}%</span></td>
+        <td>${trend}</td>
+      </tr>
+    `;
+  }
+
+  html += '</tbody></table>';
+  container.innerHTML = html;
 }
 
 function setupFilters() {
@@ -179,7 +267,7 @@ function setupFilters() {
       document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       currentFilter = btn.dataset.filter;
-      refresh();
+      if (cachedData) renderTests(cachedData.tests);
     });
   });
 }
@@ -187,18 +275,28 @@ function setupFilters() {
 let cachedData = null;
 
 async function refresh() {
-  const data = await fetchDashboard();
+  const [data, history] = await Promise.all([
+    fetchJSON('dashboard.json'),
+    fetchJSON('history.json'),
+  ]);
+
   if (data) {
+    const isNew = data.timestamp !== lastTimestamp;
     cachedData = data;
-    if (data.timestamp !== lastTimestamp) {
+
+    if (isNew) {
       lastTimestamp = data.timestamp;
       document.getElementById('timestamp').textContent = formatTimestamp(data.timestamp);
+      renderSummary(data.summary);
+      renderCoverage(data.coverage);
+      renderTests(data.tests);
+
+      if (history) {
+        renderHistory(history);
+      }
     }
-    renderSummary(data.summary);
-    renderCoverage(data.coverage);
-    renderTests(data.tests);
-  } else if (cachedData) {
-    renderTests(cachedData.tests);
+  } else if (!cachedData) {
+    // First load, no data yet — keep waiting message
   }
 }
 

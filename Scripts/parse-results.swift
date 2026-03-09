@@ -286,13 +286,47 @@ try? FileManager.default.createDirectory(atPath: outputDir, withIntermediateDire
 
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-if let jsonData = try? encoder.encode(dashboard) {
-    let outputPath = "\(outputDir)/dashboard.json"
-    FileManager.default.createFile(atPath: outputPath, contents: jsonData)
-    print("Dashboard data written to \(outputPath)")
-    print("Tests: \(tests.count) total, \(passed) passed, \(failed) failed, \(skipped) skipped")
-    print("Coverage: \(String(format: "%.1f", coverage.percentage))%")
-} else {
+
+guard let jsonData = try? encoder.encode(dashboard) else {
     print("Error: Could not encode dashboard data")
     exit(1)
 }
+
+// Write current run
+let outputPath = "\(outputDir)/dashboard.json"
+FileManager.default.createFile(atPath: outputPath, contents: jsonData)
+
+// Append to history
+struct HistoryEntry: Codable {
+    let timestamp: String
+    let summary: TestSummary
+    let coveragePercentage: Double
+}
+
+let historyPath = "\(outputDir)/history.json"
+var history: [HistoryEntry] = []
+if let existingData = FileManager.default.contents(atPath: historyPath),
+   let existing = try? JSONDecoder().decode([HistoryEntry].self, from: existingData) {
+    history = existing
+}
+
+let entry = HistoryEntry(
+    timestamp: dashboard.timestamp,
+    summary: dashboard.summary,
+    coveragePercentage: dashboard.coverage.percentage
+)
+history.append(entry)
+
+// Keep last 50 runs
+if history.count > 50 {
+    history = Array(history.suffix(50))
+}
+
+if let historyData = try? encoder.encode(history) {
+    FileManager.default.createFile(atPath: historyPath, contents: historyData)
+}
+
+print("Dashboard data written to \(outputPath)")
+print("Tests: \(tests.count) total, \(passed) passed, \(failed) failed, \(skipped) skipped")
+print("Coverage: \(String(format: "%.1f", coverage.percentage))%")
+print("History: \(history.count) runs recorded")

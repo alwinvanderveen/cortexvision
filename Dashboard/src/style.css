@@ -430,6 +430,57 @@ main {
 
 .muted { color: var(--text-muted); }
 
+/* ===== Run History ===== */
+.history-section {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  margin-top: 2rem;
+}
+
+.history-section h2 {
+  font-size: 1.1rem;
+  margin-bottom: 1rem;
+}
+
+.history-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.history-table th {
+  text-align: left;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.history-table td {
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.85rem;
+}
+
+.history-latest {
+  background: var(--blue-bg);
+}
+
+.history-latest td {
+  font-weight: 500;
+}
+
+.history-has-failures td {
+  color: var(--text);
+}
+
+.pass-cell { color: var(--green); }
+.fail-cell { color: var(--red); font-weight: 600; }
+
 /* ===== Footer ===== */
 footer {
   text-align: center;

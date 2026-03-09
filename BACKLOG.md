@@ -99,7 +99,7 @@ Als ontwikkelaar wil ik een browser-based test dashboard dat bij elke test run a
 
 ## UC-2: Xcode Project & Basis UI
 
-**Status:** `DRAFT`
+**Status:** `IN PROGRESS`
 
 ### Beschrijving
 Als gebruiker wil ik een macOS applicatie kunnen starten met een overzichtelijk hoofdvenster waarin ik kan kiezen tussen capture-modi (venster selectie of gebiedsselectie) en een preview kan zien van het resultaat, zodat ik een duidelijk startpunt heb voor het capturen van scherminhoud.
