@@ -1,0 +1,86 @@
+name: CI — Build, Test & Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  COVERAGE_THRESHOLD: 85
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_15.4.app/Contents/Developer
+
+      - name: Build
+        run: |
+          xcodebuild build \
+            -project CortexVision.xcodeproj \
+            -scheme CortexVision \
+            -destination 'platform=macOS' \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run tests with coverage
+        run: |
+          xcodebuild test \
+            -project CortexVision.xcodeproj \
+            -scheme CortexVision \
+            -destination 'platform=macOS' \
+            -enableCodeCoverage YES \
+            -resultBundlePath TestResults/results.xcresult \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Extract coverage percentage
+        id: coverage
+        run: |
+          xcrun xccov view --report --json TestResults/results.xcresult > coverage.json
+          COVERAGE=$(python3 -c "
+          import json
+          with open('coverage.json') as f:
+              data = json.load(f)
+          targets = [t for t in data.get('targets', []) if 'CortexVision' in t.get('name', '') and 'Tests' not in t.get('name', '')]
+          if targets:
+              pct = targets[0].get('lineCoverage', 0) * 100
+              print(f'{pct:.1f}')
+          else:
+              print('0.0')
+          ")
+          echo "percentage=$COVERAGE" >> "$GITHUB_OUTPUT"
+          echo "Coverage: $COVERAGE%"
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=${{ steps.coverage.outputs.percentage }}
+          echo "Coverage: ${COVERAGE}% (threshold: ${COVERAGE_THRESHOLD}%)"
+          python3 -c "
+          coverage = float('${COVERAGE}')
+          threshold = float('${COVERAGE_THRESHOLD}')
+          if coverage < threshold:
+              print(f'FAIL: Coverage {coverage}% is below threshold {threshold}%')
+              exit(1)
+          else:
+              print(f'PASS: Coverage {coverage}% meets threshold {threshold}%')
+          "
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/
+          retention-days: 30
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.json
+          retention-days: 30
