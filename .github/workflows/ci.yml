@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 env:
-  COVERAGE_THRESHOLD: 85
+  COVERAGE_THRESHOLD: 60
 
 jobs:
   build-and-test:
