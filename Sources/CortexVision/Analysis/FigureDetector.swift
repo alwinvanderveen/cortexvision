@@ -71,9 +71,18 @@ public final class FigureDetector: Sendable {
         self.debug = debug ?? (ProcessInfo.processInfo.environment["FIGURE_DEBUG"] == "1")
     }
 
+    private static let debugLogURL: URL = URL(fileURLWithPath: "/tmp/cortexvision-analysis-debug.log")
+
     private func dbg(_ msg: @autoclosure () -> String) {
         guard debug else { return }
-        print("[FigureDetector] \(msg())")
+        let line = "[FigureDetector] \(msg())\n"
+        print(line, terminator: "")
+        // Also append to shared debug log file for app-level debugging
+        if let handle = try? FileHandle(forWritingTo: Self.debugLogURL) {
+            handle.seekToEndOfFile()
+            handle.write(line.data(using: .utf8)!)
+            handle.closeFile()
+        }
     }
 
     /// Detect figures in an image, excluding regions covered by text.
@@ -112,10 +121,22 @@ public final class FigureDetector: Sendable {
             detectWithDocLayout(in: image, textBounds: textBounds)
         )
 
-        // --- Vision pipeline (saliency + instance mask) with DocLayout candidates merged ---
+        // --- OCR-gap candidates (deterministic, based on text structure) ---
+        let ocrGaps = OCRGapAnalyzer.findGaps(in: textBounds)
+        let ocrGapCandidates = ocrGaps.map { gap in
+            FigureCandidate(
+                bounds: gap.bounds,
+                source: .ocrGap,
+                confidence: 0.3,
+                evidence: []
+            )
+        }
+        dbg("ocrGaps (\(ocrGaps.count)): \(ocrGaps.map { "(\(String(format:"%.3f %.3f %.3f %.3f", $0.bounds.minX, $0.bounds.minY, $0.bounds.width, $0.bounds.height)))" }.joined(separator: " "))")
+
+        // --- Vision pipeline (saliency + instance mask) with all additional candidates merged ---
         return try await detectWithSaliency(
             in: image, textBounds: textBounds, subjectBounds: subjectBounds,
-            additionalCandidates: docLayoutCandidates
+            additionalCandidates: docLayoutCandidates + ocrGapCandidates
         )
     }
 
@@ -604,6 +625,20 @@ public final class FigureDetector: Sendable {
             )
             guard !clampedRect.isEmpty, let cropped = image.cropping(to: clampedRect) else {
                 dbg("PASS4 reject: empty/crop failed for bounds=(\(String(format:"%.3f %.3f %.3f %.3f",bounds.minX,bounds.minY,bounds.width,bounds.height)))")
+                continue
+            }
+
+            // Validation: aspect ratio plausibility — reject thin strips
+            let aspectRatio = bounds.width / max(bounds.height, 0.001)
+            if aspectRatio < 0.15 {
+                dbg("PASS4 reject: implausible aspect ratio \(String(format:"%.2f", aspectRatio)) for \(cropped.width)×\(cropped.height)")
+                continue
+            }
+
+            // Validation: text-bleed — reject candidates with significant text overlap
+            let textBleed = textOverlapFraction(region: bounds, textBounds: textBounds)
+            if textBleed > 0.10 {
+                dbg("PASS4 reject: text bleed \(String(format:"%.1f%%", textBleed * 100)) for \(cropped.width)×\(cropped.height)")
                 continue
             }
 
@@ -1652,8 +1687,25 @@ public final class FigureDetector: Sendable {
             $0.intersection(candidate.bounds).width * $0.intersection(candidate.bounds).height <
             $1.intersection(candidate.bounds).width * $1.intersection(candidate.bounds).height
         }) {
-            let score = scoreHypothesis(bestRegion, contentMap: contentMap)
-            hypotheses.append(BoundaryHypothesis(bounds: bestRegion, strategy: .contentFit, score: score))
+            // When the content region extends far beyond the candidate (e.g. dark background
+            // pages where photos and text form one connected component), clip it to the
+            // candidate vicinity. Without this, contentFit returns the entire page content
+            // and subsequent text trimming squeezes the region to a narrow strip.
+            var clippedRegion = bestRegion
+            let interArea = bestRegion.intersection(candidate.bounds).width * bestRegion.intersection(candidate.bounds).height
+            let regionArea = bestRegion.width * bestRegion.height
+            if regionArea > 0 && interArea / regionArea < 0.5 {
+                let margin: CGFloat = 0.3
+                let expanded = CGRect(
+                    x: max(0, candidate.bounds.minX - candidate.bounds.width * margin),
+                    y: max(0, candidate.bounds.minY - candidate.bounds.height * margin),
+                    width: min(1.0, candidate.bounds.width * (1 + 2 * margin)),
+                    height: min(1.0, candidate.bounds.height * (1 + 2 * margin))
+                ).intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+                clippedRegion = bestRegion.intersection(expanded)
+            }
+            let score = scoreHypothesis(clippedRegion, contentMap: contentMap)
+            hypotheses.append(BoundaryHypothesis(bounds: clippedRegion, strategy: .contentFit, score: score))
         } else if let contentBox = contentMap.contentBoundingBox() {
             // Fallback: if no connected component overlaps, use global bounding box
             let score = scoreHypothesis(contentBox, contentMap: contentMap)
@@ -1679,7 +1731,15 @@ public final class FigureDetector: Sendable {
             if let bestSubjectRegion = subjectContentRegions.max(by: { $0.width * $0.height < $1.width * $1.height }) {
                 subjectUnion = subjectUnion.union(bestSubjectRegion)
             }
-            let subjectScore = scoreHypothesis(subjectUnion, contentMap: contentMap)
+            // Penalize when subject is much larger than the candidate — this prevents
+            // a large subject (e.g. covering half the image) from absorbing unrelated
+            // candidates that happen to overlap slightly. Without this, multiple candidates
+            // collapse to the same subject bounds and get merged into one.
+            let candidateArea = max(candidate.bounds.width * candidate.bounds.height, 0.001)
+            let subjectArea = subjectUnion.width * subjectUnion.height
+            let expansionRatio = subjectArea / candidateArea
+            let expansionPenalty = expansionRatio > 1.2 ? min(1.0, 1.2 / expansionRatio) : 1.0
+            let subjectScore = scoreHypothesis(subjectUnion, contentMap: contentMap) * expansionPenalty
             hypotheses.append(BoundaryHypothesis(bounds: subjectUnion, strategy: .subjectAnchored, score: subjectScore))
         }
 

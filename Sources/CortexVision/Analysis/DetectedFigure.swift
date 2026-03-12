@@ -75,6 +75,8 @@ public enum CandidateSource: Equatable, Sendable {
     case instanceMask
     /// Promoted subject not covered by saliency.
     case promoted
+    /// Detected by OCR gap analysis (vertical gap between text bands).
+    case ocrGap
 }
 
 /// Evidence supporting a figure candidate.

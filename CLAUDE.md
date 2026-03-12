@@ -155,6 +155,23 @@ De kwaliteit van detectie (OCR, figuurherkenning, layout-analyse) is het **prima
 - **Trade-offs presenteren.** Wanneer er een spanning bestaat tussen kwaliteit en performance, presenteer beide opties met concrete cijfers aan de gebruiker en wacht op een keuze.
 - **Afwijking alleen met expliciete toestemming.** Elke beslissing die detectiekwaliteit opoffert voor performance moet worden voorgelegd aan de gebruiker met een duidelijke onderbouwing.
 
+## HARDE GATE 9: Debug-first Probleemanalyse
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+Bij het debuggen van problemen geldt: **gebruik altijd debug-output om het probleem te lokaliseren, niet logisch redeneren vanuit aannames.**
+
+### Regels
+- **Nooit theoretiseren zonder data.** Wanneer een test faalt of een pipeline onverwacht gedrag vertoont: voeg DIRECT debug-output toe aan de relevante code om de werkelijke waarden te zien. Pas dan pas conclusies trekken.
+- **Debug is parameter-gestuurd.** Debug-output wordt aangestuurd via een environment variable of flag (`FIGURE_DEBUG=1`, `make test DEBUG=1`), niet door print-statements toe te voegen en te verwijderen. Dit voorkomt onnodige code-churn en maakt debug herbruikbaar.
+- **Geen aannames over tussenresultaten.** Wanneer een pipeline meerdere stappen heeft (sampling → content map → hypotheses → scoring → extractie → validatie), log de output van ELKE stap zodat het exacte punt van falen zichtbaar wordt.
+- **Snel schakelen.** Bij het eerste teken van een probleem: debug toevoegen, draaien, output lezen, conclusie trekken. Niet 3 alinea's schrijven over wat het probleem "waarschijnlijk" is.
+
+### Voorbeeld
+> Test faalt: "variance 18.8 < 20.0"
+> ❌ Fout: "De variance is te laag, waarschijnlijk omdat de figuur subtiele kleuren heeft. Laten we de threshold verlagen."
+> ✅ Goed: Debug toevoegen aan colorVariance → zien dat brightness-only variance wordt berekend → concluderen dat RGB-kanalen nodig zijn → fixen.
+
 ## Overige regels
 
 - Code in het Engels, UI labels in het Engels, comments in het Engels

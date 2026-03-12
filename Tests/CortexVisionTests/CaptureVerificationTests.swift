@@ -623,23 +623,18 @@ struct CaptureVerificationTests {
     // MARK: - Figure Detection Tests
 
     @Test("Hero banner above text: figure detected without text bleeding",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func heroBannerAboveText() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.heroBanner(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let size = CGSize(width: 800, height: 600)
+        let view = HeroBannerView(frame: NSRect(origin: .zero, size: size))
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -664,23 +659,18 @@ struct CaptureVerificationTests {
     }
 
     @Test("Region cutout with hero and text: figure separated from text",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func regionCutoutHeroAndText() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.heroCutout(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let size = CGSize(width: 800, height: 280)
+        let view = HeroCutoutView(frame: NSRect(origin: .zero, size: size))
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -700,8 +690,9 @@ struct CaptureVerificationTests {
 
     // MARK: - Structural Validation: Figure Position & Contrast Variants
 
-    /// Generic helper: creates a reference window with a configurable figure and text layout,
-    /// captures it, runs the full pipeline, and returns diagnostic info.
+    /// Generic helper: renders a configurable figure+text view to a deterministic CGImage
+    /// (sRGB, 2x scale), runs the full pipeline, and returns diagnostic info.
+    /// No screen capture dependency — works identically on any monitor/color profile.
     @MainActor
     private func runFigureTest(
         label: String,
@@ -713,24 +704,19 @@ struct CaptureVerificationTests {
         textColor: NSColor = .black,
         subjectShape: Bool = true
     ) async throws -> (figureCount: Int, firstBounds: CGRect?, firstAspect: CGFloat?) {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.configurable(
-            on: screen, size: windowSize,
+        let view = ConfigurableFigureView(
+            frame: NSRect(origin: .zero, size: windowSize),
             background: background, figurePosition: figurePosition,
             figureHeight: figureHeight, figureColors: figureColors,
             textColor: textColor, subjectShape: subjectShape
         )
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let image = renderViewToImage(view, size: windowSize)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         let firstBounds = figureResult.figures.first?.bounds
@@ -749,7 +735,7 @@ struct CaptureVerificationTests {
     // --- High contrast variants (figure clearly distinct from background) ---
 
     @Test("High contrast: dark figure on white bg, figure at top",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func highContrastDarkOnWhiteTop() async throws {
         let r = try await runFigureTest(
@@ -766,7 +752,7 @@ struct CaptureVerificationTests {
     }
 
     @Test("High contrast: dark figure on white bg, figure at bottom",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func highContrastDarkOnWhiteBottom() async throws {
         let r = try await runFigureTest(
@@ -783,7 +769,7 @@ struct CaptureVerificationTests {
     }
 
     @Test("High contrast: light figure on dark bg",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func highContrastLightOnDark() async throws {
         let r = try await runFigureTest(
@@ -803,7 +789,7 @@ struct CaptureVerificationTests {
     // --- Medium contrast variants ---
 
     @Test("Medium contrast: muted figure on light gray bg",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func mediumContrastGrayBg() async throws {
         let r = try await runFigureTest(
@@ -820,7 +806,7 @@ struct CaptureVerificationTests {
     }
 
     @Test("Medium contrast: warm figure on cream bg",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func mediumContrastCreamBg() async throws {
         let r = try await runFigureTest(
@@ -839,7 +825,7 @@ struct CaptureVerificationTests {
     // --- Low contrast variants ---
 
     @Test("Low contrast: subtle figure on light gray bg",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func lowContrastSubtleOnGray() async throws {
         let r = try await runFigureTest(
@@ -861,7 +847,7 @@ struct CaptureVerificationTests {
     // --- Position variants (same figure, different placement) ---
 
     @Test("Figure in middle third with text above and below",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func figureInMiddle() async throws {
         let r = try await runFigureTest(
@@ -878,7 +864,7 @@ struct CaptureVerificationTests {
     }
 
     @Test("Tall narrow figure (portrait aspect) on white bg",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func tallNarrowFigure() async throws {
         let r = try await runFigureTest(
@@ -899,7 +885,7 @@ struct CaptureVerificationTests {
     // --- Small figure variant ---
 
     @Test("Small figure (15% height) above dense text",
-          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func smallFigureAboveDenseText() async throws {
         let r = try await runFigureTest(
@@ -919,32 +905,19 @@ struct CaptureVerificationTests {
     }
 
     @Test("Text-only window produces no figures",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func textOnlyNoFigures() async throws {
-        let screen = NSScreen.main!
-        let ref = OCRReferenceWindow.singleParagraph(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let windowFrame = ref.window.frame
-        let contentRect = ref.window.contentLayoutRect
-        let contentScreenRect = CGRect(
-            x: windowFrame.origin.x + contentRect.origin.x,
-            y: windowFrame.origin.y + contentRect.origin.y,
-            width: contentRect.width,
-            height: contentRect.height
-        )
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(contentScreenRect)
-        ref.close()
+        let size = CGSize(width: 600, height: 300)
+        let content = "CortexVision OCR Test\nThis is a single paragraph of text used to verify\nthat the OCR engine correctly recognizes and extracts\ntext content from captured screen regions."
+        let view = OCRSingleTextView(frame: NSRect(origin: .zero, size: size), content: content)
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count == 0,
@@ -952,29 +925,15 @@ struct CaptureVerificationTests {
     }
 
     @Test("Empty window produces no figures",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func emptyWindowNoFigures() async throws {
-        let screen = NSScreen.main!
-        let ref = OCRReferenceWindow.emptyContent(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let windowFrame = ref.window.frame
-        let contentRect = ref.window.contentLayoutRect
-        let contentScreenRect = CGRect(
-            x: windowFrame.origin.x + contentRect.origin.x,
-            y: windowFrame.origin.y + contentRect.origin.y,
-            width: contentRect.width,
-            height: contentRect.height
-        )
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(contentScreenRect)
-        ref.close()
+        let size = CGSize(width: 400, height: 300)
+        let view = OCRSingleTextView(frame: NSRect(origin: .zero, size: size), content: nil)
+        let image = renderViewToImage(view, size: size)
 
         let detector = FigureDetector()
-        let figureResult = try await detector.detectFigures(in: result.image)
+        let figureResult = try await detector.detectFigures(in: image)
 
         #expect(figureResult.figures.count == 0,
                 "Empty content area should have 0 figures, got \(figureResult.figures.count)")
@@ -983,30 +942,26 @@ struct CaptureVerificationTests {
     // MARK: - Realistic Background & Contrast Tests
 
     @Test("Figure on light gray background (#F0F0F0) is detected",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func figureOnLightGrayBackground() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.photoOnBackground(
-            on: screen,
-            background: NSColor(white: 0.94, alpha: 1.0),  // #F0F0F0
+        let size = CGSize(width: 700, height: 500)
+        let view = PhotoOnBackgroundView(
+            frame: NSRect(origin: .zero, size: size),
+            background: NSColor(white: 0.94, alpha: 1.0),
             photoColors: [
                 NSColor(red: 0.35, green: 0.50, blue: 0.45, alpha: 1.0),
                 NSColor(red: 0.50, green: 0.55, blue: 0.40, alpha: 1.0),
-            ]
+            ],
+            textColor: .black
         )
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -1019,31 +974,26 @@ struct CaptureVerificationTests {
     }
 
     @Test("Figure on dark background (#2D2D2D) with light text is detected",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func figureOnDarkBackground() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.photoOnBackground(
-            on: screen,
-            background: NSColor(white: 0.18, alpha: 1.0),  // #2D2D2D
+        let size = CGSize(width: 700, height: 500)
+        let view = PhotoOnBackgroundView(
+            frame: NSRect(origin: .zero, size: size),
+            background: NSColor(white: 0.18, alpha: 1.0),
             photoColors: [
                 NSColor(red: 0.55, green: 0.65, blue: 0.75, alpha: 1.0),
                 NSColor(red: 0.70, green: 0.60, blue: 0.50, alpha: 1.0),
             ],
-            textColor: NSColor(white: 0.90, alpha: 1.0)  // light text
+            textColor: NSColor(white: 0.90, alpha: 1.0)
         )
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -1056,30 +1006,26 @@ struct CaptureVerificationTests {
     }
 
     @Test("Figure on cream background (#F5F0E8) is detected",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func figureOnCreamBackground() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.photoOnBackground(
-            on: screen,
-            background: NSColor(red: 0.96, green: 0.94, blue: 0.91, alpha: 1.0),  // #F5F0E8
+        let size = CGSize(width: 700, height: 500)
+        let view = PhotoOnBackgroundView(
+            frame: NSRect(origin: .zero, size: size),
+            background: NSColor(red: 0.96, green: 0.94, blue: 0.91, alpha: 1.0),
             photoColors: [
                 NSColor(red: 0.40, green: 0.55, blue: 0.50, alpha: 1.0),
                 NSColor(red: 0.55, green: 0.50, blue: 0.40, alpha: 1.0),
-            ]
+            ],
+            textColor: .black
         )
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -1092,23 +1038,18 @@ struct CaptureVerificationTests {
     }
 
     @Test("Low contrast hero: photo top edge fades into light gray background",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func lowContrastHeroTopEdge() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.lowContrastHero(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let size = CGSize(width: 800, height: 500)
+        let view = LowContrastHeroView(frame: NSRect(origin: .zero, size: size))
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -1127,23 +1068,18 @@ struct CaptureVerificationTests {
     }
 
     @Test("Subtle figure: pastel diagram on off-white background",
-          .tags(.figures, .capture),
-          .enabled(if: isScreenRecordingAvailable))
+          .tags(.figures))
     @MainActor
     func subtlePastelFigure() async throws {
-        let screen = NSScreen.main!
-        let ref = FigureReferenceWindow.subtleDiagram(on: screen)
-        try await Task.sleep(for: .milliseconds(500))
-
-        let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
-        ref.close()
+        let size = CGSize(width: 700, height: 500)
+        let view = SubtleDiagramView(frame: NSRect(origin: .zero, size: size))
+        let image = renderViewToImage(view, size: size)
 
         let engine = OCREngine()
-        let ocrResult = try await engine.recognizeText(in: result.image)
+        let ocrResult = try await engine.recognizeText(in: image)
         let detector = FigureDetector()
         let figureResult = try await detector.detectFigures(
-            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+            in: image, textBounds: ocrResult.textBlocks.map(\.bounds)
         )
 
         #expect(figureResult.figures.count >= 1,
@@ -1539,6 +1475,39 @@ private enum FigurePosition {
     case top     // figure at top, text below
     case bottom  // text at top, figure at bottom
     case middle  // text above and below figure
+}
+
+// MARK: - Deterministic View Rendering
+
+/// Renders an NSView to a CGImage using a fixed sRGB color space at 2x scale.
+/// Removes monitor/color profile/display dependency for deterministic figure detection tests.
+@MainActor
+private func renderViewToImage(_ view: NSView, size: CGSize, scale: CGFloat = 2.0) -> CGImage {
+    let pixelWidth = Int(size.width * scale)
+    let pixelHeight = Int(size.height * scale)
+    let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+
+    let context = CGContext(
+        data: nil,
+        width: pixelWidth,
+        height: pixelHeight,
+        bitsPerComponent: 8,
+        bytesPerRow: 0,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+
+    // Scale for Retina-equivalent rendering
+    context.scaleBy(x: scale, y: scale)
+
+    // Draw the view into the bitmap context via NSGraphicsContext
+    let nsContext = NSGraphicsContext(cgContext: context, flipped: false)
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = nsContext
+    view.draw(view.bounds)
+    NSGraphicsContext.restoreGraphicsState()
+
+    return context.makeImage()!
 }
 
 private final class FigureReferenceWindow {

@@ -27,6 +27,20 @@ public final class AppViewModel: ObservableObject {
     private let regionSelector = RegionSelector()
     private let ocrEngine = OCREngine()
     private let figureDetector = FigureDetector()
+    private let debugLogURL: URL? = ProcessInfo.processInfo.environment["FIGURE_DEBUG"] == "1"
+        ? URL(fileURLWithPath: "/tmp/cortexvision-analysis-debug.log") : nil
+
+    private func debugLog(_ message: String) {
+        guard let url = debugLogURL else { return }
+        let line = message + "\n"
+        if let handle = try? FileHandle(forWritingTo: url) {
+            handle.seekToEndOfFile()
+            handle.write(line.data(using: .utf8)!)
+            handle.closeFile()
+        } else {
+            try? line.data(using: .utf8)?.write(to: url)
+        }
+    }
 
     // MARK: - Computed Properties
 
@@ -220,15 +234,38 @@ public final class AppViewModel: ObservableObject {
         ocrResult = nil
         figureResult = nil
 
+        let debug = debugLogURL != nil
+
         do {
+            // Clear previous debug log
+            if debug {
+                try? "".data(using: .utf8)?.write(to: debugLogURL!)
+                debugLog("[AppViewModel] === ANALYSIS START (image \(image.width)×\(image.height), bpc=\(image.bitsPerComponent), cs=\(image.colorSpace?.name ?? "nil" as CFString)) ===")
+            }
+
             // Run OCR first (we need text bounds for figure exclusion)
             let ocrRes = try await ocrEngine.recognizeText(in: image)
             ocrResult = ocrRes
+
+            if debug {
+                debugLog("[AppViewModel] OCR: \(ocrRes.textBlocks.count) blocks, \(ocrRes.wordCount) words")
+                for (i, block) in ocrRes.textBlocks.enumerated() {
+                    debugLog("[AppViewModel]   text[\(i)] bounds=(\(String(format: "%.3f %.3f %.3f %.3f", block.bounds.minX, block.bounds.minY, block.bounds.width, block.bounds.height))) \"\(String(block.text.prefix(40)))\"")
+                }
+            }
 
             // Run figure detection with text exclusion
             let textBounds = ocrRes.textBlocks.map(\.bounds)
             let figureRes = try await figureDetector.detectFigures(in: image, textBounds: textBounds)
             figureResult = figureRes
+
+            if debug {
+                debugLog("[AppViewModel] Figures: \(figureRes.figures.count)")
+                for (i, fig) in figureRes.figures.enumerated() {
+                    let imgDesc = fig.extractedImage.map { "\($0.width)×\($0.height)" } ?? "nil"
+                    debugLog("[AppViewModel]   fig[\(i)] bounds=(\(String(format: "%.3f %.3f %.3f %.3f", fig.bounds.minX, fig.bounds.minY, fig.bounds.width, fig.bounds.height))) img=\(imgDesc) selected=\(fig.isSelected)")
+                }
+            }
 
             // Build overlays: text (blue) + figures (green)
             // Vision uses bottom-left origin (y=0 at bottom), but SwiftUI/CGImage
@@ -261,9 +298,16 @@ public final class AppViewModel: ObservableObject {
                 )
             }
 
+            if debug {
+                debugLog("[AppViewModel] Overlays: \(overlays.filter { $0.kind == .text }.count) text + \(overlays.filter { $0.kind == .figure }.count) figure")
+            }
+
             analysisOverlays = overlays
             captureState = .analyzed(wordCount: ocrRes.wordCount, figureCount: figureRes.figures.count)
+
+            if debug { debugLog("[AppViewModel] === ANALYSIS END ===") }
         } catch {
+            if debug { debugLog("[AppViewModel] === ANALYSIS ERROR: \(error) ===") }
             captureState = .error("Analysis failed: \(error.localizedDescription)")
         }
     }
