@@ -8,10 +8,17 @@ let package = Package(
         .library(name: "CortexVision", targets: ["CortexVision"]),
         .executable(name: "CortexVisionApp", targets: ["CortexVisionApp"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
+    ],
     targets: [
         .target(
             name: "CortexVision",
-            path: "Sources/CortexVision"
+            dependencies: [
+                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
+            ],
+            path: "Sources/CortexVision",
+            resources: [.copy("Resources")]
         ),
         .executableTarget(
             name: "CortexVisionApp",

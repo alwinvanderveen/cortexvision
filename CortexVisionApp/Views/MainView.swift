@@ -18,7 +18,11 @@ struct MainView: View {
 
                 ResultsPanel(
                     captureState: viewModel.captureState,
-                    ocrResult: viewModel.ocrResult
+                    ocrResult: viewModel.ocrResult,
+                    figureResult: viewModel.figureResult,
+                    onToggleFigure: { index in
+                        viewModel.toggleFigureSelection(at: index)
+                    }
                 )
                     .frame(minWidth: 250, idealWidth: 350)
             }

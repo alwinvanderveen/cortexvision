@@ -103,6 +103,58 @@ Elke bugfix, bevinding of incident MOET vergezeld gaan van testgevallen die:
 > → 6 testgevallen toegevoegd: Y-flip, clamping, off-screen, zero-display, full-screen
 > → `make test` bevestigt: alle tests PASS
 
+## HARDE GATE 6: Iteratielimiet & Tunnelvisie-preventie
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+Bij het oplossen van een probleem geldt een **maximaal 3-iteratie regel**:
+
+1. **Iteratie 1:** Implementeer een oplossing, test tegen alle bestaande tests
+2. **Iteratie 2:** Als iteratie 1 regressie veroorzaakt, analyseer de root cause en pas aan
+3. **Iteratie 3:** Als iteratie 2 ook regressie veroorzaakt: **STOP. Stap terug.**
+
+Na 3 mislukte iteraties:
+- **Revert** alle wijzigingen naar de laatst werkende staat
+- **Analyseer** het probleem op architectuurniveau — niet op parameterniveau
+- **Onderzoek** alternatieve benaderingen, ook als die nieuwe methoden, abstracties, frameworks of technieken vereisen
+- **Presenteer** het architectuurvoorstel aan de gebruiker vóór verdere implementatie
+
+### Signalen van tunnelvisie
+- Dezelfde parameter/threshold wordt herhaaldelijk aangepast
+- Elke fix voor case A breekt case B
+- Code wordt geschreven specifiek voor één test-afbeelding of scenario
+- Meer dan 30 minuten besteed aan hetzelfde sub-probleem zonder groene tests
+
+### De juiste reactie
+Terugkeren naar de tekentafel. Een werkend systeem met een bekend open issue is beter dan een kapot systeem met geforceerde fixes. Presenteer het architectuurprobleem en de overwogen alternatieven aan de gebruiker.
+
+## HARDE GATE 7: Tests zijn Heilig — Geen Aanpassing zonder Goedkeuring
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+Tests definiëren het gewenste gedrag van het systeem. Wanneer een test faalt, is de **code** fout — niet de test.
+
+### Regels
+- **Tests worden NOOIT aangepast om falende resultaten te accepteren** zonder:
+  1. Een expliciete **verklaring** aan de gebruiker waarom de test-verwachting niet klopt
+  2. **Expliciete goedkeuring** van de gebruiker vóór de wijziging wordt doorgevoerd
+- **Het doel bepaalt de test, niet het resultaat.** Als het systeem een figuur moet detecteren en dat niet doet, is de detectie het probleem — niet de test die dat verwacht.
+- **Geen herdefinitie van succes.** Het is niet toegestaan om falend gedrag te herformuleren als "correct" om een test groen te krijgen.
+- **Bij een falende test:** analyseer waarom de code het verwachte gedrag niet levert en los dat op, of presenteer aan de gebruiker waarom het verwachte gedrag onhaalbaar of onjuist is.
+
+## HARDE GATE 8: Detectiekwaliteit boven Performance
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+De kwaliteit van detectie (OCR, figuurherkenning, layout-analyse) is het **primaire doel** van het systeem. Processing-tijd en resource-gebruik zijn secundair.
+
+### Regels
+- **Detectiekwaliteit is niet onderhandelbaar.** Er mag geen concessie worden gedaan op detectie-nauwkeurigheid ten gunste van snelheid of lager resource-gebruik, tenzij de gebruiker hier expliciet toestemming voor geeft.
+- **Meerdere processing-rondes zijn toegestaan en gewenst** wanneer dit de detectiekwaliteit verbetert. Denk aan: multi-pass pipelines, fallback-detectie, hybride modellen, validatie-rondes.
+- **Bij een keuze tussen sneller of beter:** kies altijd beter, tenzij de gebruiker expliciet anders aangeeft.
+- **Trade-offs presenteren.** Wanneer er een spanning bestaat tussen kwaliteit en performance, presenteer beide opties met concrete cijfers aan de gebruiker en wacht op een keuze.
+- **Afwijking alleen met expliciete toestemming.** Elke beslissing die detectiekwaliteit opoffert voor performance moet worden voorgelegd aan de gebruiker met een duidelijke onderbouwing.
+
 ## Overige regels
 
 - Code in het Engels, UI labels in het Engels, comments in het Engels

@@ -288,10 +288,10 @@ Als gebruiker wil ik dat na een capture automatisch alle tekst wordt herkend en 
 
 ## UC-5: Figuur Detectie & Extractie
 
-**Status:** `DRAFT`
+**Status:** `APPROVED`
 
 ### Beschrijving
-Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen) automatisch worden herkend en als losse bestanden worden opgeslagen, zodat ik visuele elementen apart kan hergebruiken.
+Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen, foto's) automatisch worden herkend — ongeacht hun vorm — en als losse bestanden beschikbaar worden gesteld, zodat ik visuele elementen apart kan hergebruiken.
 
 ### Actors
 - Eindgebruiker
@@ -299,38 +299,132 @@ Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen)
 
 ### Precondities
 - Er is een capture beschikbaar
+- OCR is uitgevoerd (UC-4) zodat tekstregio's bekend zijn
 
 ### Flow
 1. Na capture start figuurdetectie parallel aan OCR
-2. Systeem detecteert rechthoekige regio's die geen tekst bevatten
-3. Per gedetecteerde figuur wordt een bounding box bepaald
-4. Figuren worden uitgesneden als losse afbeeldingen
-5. In het preview paneel worden figuren met een kader gemarkeerd
-6. Gebruiker kan figuren aan/uit selecteren voor export
-7. Elke figuur krijgt een genummerd label (Figuur 1, Figuur 2, ...)
+2. Systeem combineert twee detectiemethoden:
+   a. **Saliency detectie** (VNGenerateAttentionBasedSaliencyImageRequest) vindt visueel opvallende regio's
+   b. **Tekst-exclusie** via OCR bounding boxes: regio's die overlappen met tekst worden uitgefilterd
+3. Overblijvende opvallende regio's worden als figuur geïdentificeerd
+4. Overlappende detecties worden samengevoegd (>50% overlap → merge)
+5. Per figuur wordt een bounding box bepaald en de figuur uitgesneden als CGImage
+6. In het preview paneel worden figuren met een groen kader gemarkeerd
+7. Gebruiker kan figuren aan/uit selecteren voor export
+8. Elke figuur krijgt een genummerd label (Figure 1, Figure 2, ...)
+
+### Detectie-aanpak
+| Methode | Doel |
+|---------|------|
+| VNGenerateAttentionBasedSaliencyImageRequest | Vindt visueel opvallende regio's (ongeacht vorm: rechthoeken, cirkels, onregelmatig) |
+| OCR bounding boxes (uit UC-4) | Filtert tekstregio's uit, zodat alleen non-tekst regio's als figuur worden geïdentificeerd |
+| Overlap merging | Samengevoegde regio's die >50% overlappen tot één figuur |
+| Minimum-grootte filter | Regio's kleiner dan 3% van de afbeelding worden genegeerd (ruis) |
 
 ### Postcondities
 - Figuren zijn als losse CGImage objecten beschikbaar
-- Elke figuur heeft een bounding box, label en type-indicatie
+- Elke figuur heeft een bounding box, volgnummer en selected-state
 - Tekstregio's zijn uitgesloten van figuurdetectie
+- Preview toont groene overlays voor gedetecteerde figuren
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| FigureDetector | `PRODUCTIE` | Vision saliency + tekst-exclusie via OCR bounds |
+| DetectedFigure model | `PRODUCTIE` | Bounds, label, extracted CGImage, selected state |
+| Figuur uitsnijden | `PRODUCTIE` | CGImage.cropping(to:) met pixel-conversie |
+| Overlap merging | `PRODUCTIE` | IoU-berekening, samenvoeging bij >50% overlap |
+| Preview overlay (groen) | `PRODUCTIE` | Bestaand AnalysisOverlay met `.figure` kind |
+| Figuur selectie UI | `PRODUCTIE` | Toggle per figuur in Results panel |
+| Export van figuren | `SCAFFOLD` | Export-logica komt in UC-7; hier alleen extracted CGImages. Vervangplan: UC-7 implementeert PNG-export via ExportDestination protocol |
 
 ### Acceptatiecriteria
-- [ ] Rechthoekige figuren worden gedetecteerd met >90% nauwkeurigheid
+- [ ] Figuren worden gedetecteerd ongeacht vorm (rechthoek, cirkel, onregelmatig)
 - [ ] Tekstregio's worden niet als figuur aangemerkt
-- [ ] Gedetecteerde figuren worden visueel gemarkeerd in preview
+- [ ] Gedetecteerde figuren worden visueel gemarkeerd in preview (groene overlays)
+- [ ] Figuren worden uitgesneden als losse CGImage objecten
 - [ ] Gebruiker kan individuele figuren deselecteren
-- [ ] Figuren worden gelabeld met volgnummer
+- [ ] Figuren worden gelabeld met volgnummer (Figure 1, Figure 2, ...)
 - [ ] Overlappende detecties worden samengevoegd
+- [ ] Regio's kleiner dan 3% van de afbeelding worden genegeerd
+- [ ] Figuurdetectie draait asynchroon (UI blokkeert niet)
 
-### Testcases
+### Testcases — Unit (draaien overal, ook CI)
+
+**Detectie basis**
 | ID | Beschrijving | Verwacht resultaat |
 |----|-------------|-------------------|
-| TC-5.1 | Afbeelding met 1 grafiek en tekst | Grafiek gedetecteerd, tekst niet |
-| TC-5.2 | Afbeelding met 3 foto's naast elkaar | 3 aparte figuren gedetecteerd |
-| TC-5.3 | Afbeelding met alleen tekst | Geen figuren gedetecteerd |
-| TC-5.4 | Afbeelding met tabel | Tabel als figuur gedetecteerd |
-| TC-5.5 | Afbeelding met overlappende figuren | Samengevoegd tot één figuur |
-| TC-5.6 | Figuur deselecteren door gebruiker | Figuur wordt uitgesloten van export |
+| TC-5.1a | DetectedFigure model heeft unieke ID's | Twee figuren hebben verschillende id's |
+| TC-5.1b | DetectedFigure default selected state is true | Nieuw aangemaakt figuur is geselecteerd |
+| TC-5.1c | DetectedFigure label volgt volgnummer | Figuur aangemaakt met index 0 → "Figure 1", index 2 → "Figure 3" |
+| TC-5.1d | DetectedFigure bounds zijn genormaliseerd (0..1) | Bounds vallen binnen 0..1 range |
+
+**Overlap merging**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.2a | Twee niet-overlappende regio's | Beide blijven behouden als aparte figuren |
+| TC-5.2b | Twee regio's met >50% overlap | Samengevoegd tot één figuur met merged bounds |
+| TC-5.2c | Twee regio's met exact 50% overlap | Niet samengevoegd (drempelwaarde is >50%) |
+| TC-5.2d | Drie regio's waarvan 2 overlappen | 2 merged + 1 apart = 2 figuren |
+| TC-5.2e | Volledig overlappende regio's (identieke bounds) | Samengevoegd tot één figuur |
+| TC-5.2f | Lege lijst regio's | Leeg resultaat, geen crash |
+
+**Tekst-exclusie**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.3a | Saliency-regio overlapt volledig met tekst-bounds | Regio wordt uitgefilterd |
+| TC-5.3b | Saliency-regio overlapt gedeeltelijk met tekst | Regio blijft behouden (niet volledig tekst) |
+| TC-5.3c | Saliency-regio zonder overlap met tekst | Regio blijft behouden als figuur |
+| TC-5.3d | Geen tekst-bounds aanwezig (leeg OCR) | Alle saliency-regio's worden figuren |
+
+**Minimum-grootte filter**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.4a | Regio kleiner dan 3% van afbeelding | Wordt genegeerd |
+| TC-5.4b | Regio exact 3% van afbeelding | Wordt behouden |
+| TC-5.4c | Regio groter dan 3% van afbeelding | Wordt behouden |
+| TC-5.4d | Zeer grote regio (>80% van afbeelding) | Wordt behouden |
+
+**Figuur uitsnijden**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.5a | Crop van genormaliseerde bounds naar pixel rect | Correcte pixel-coördinaten (x * width, y * height) |
+| TC-5.5b | Crop bij beeldrand (bounds raken edge) | Geclampt binnen afbeelding, geen crash |
+| TC-5.5c | Crop levert CGImage met juiste dimensies | Breedte en hoogte komen overeen met bounds * image size |
+
+**Selectie-state**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.6a | Figuur deselecteren | selected wordt false |
+| TC-5.6b | Figuur herselecteren | selected wordt weer true |
+| TC-5.6c | Alleen geselecteerde figuren opvragen | Filter retourneert subset |
+
+### Testcases — Integration (alleen lokaal, vereist screen recording permissie)
+
+**Detectie met referentievensters**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.7a | Venster met 1 blauw vierkant en tekst | 1 figuur gedetecteerd, tekst niet als figuur |
+| TC-5.7b | Venster met 3 gekleurde blokken naast elkaar | 3 aparte figuren gedetecteerd |
+| TC-5.7c | Venster met alleen tekst (geen figuren) | 0 figuren gedetecteerd |
+| TC-5.7d | Venster met rood cirkel-element | Figuur gedetecteerd ondanks niet-rechthoekige vorm |
+| TC-5.7e | Venster met figuur boven tekst | Figuur gedetecteerd, tekst apart herkend |
+| TC-5.7f | Venster met figuur tussen twee alinea's | Figuur gedetecteerd, beide alinea's als tekst |
+| TC-5.7g | Venster met meerdere figuren van verschillende grootte | Alle figuren gedetecteerd met correcte relatieve grootte |
+| TC-5.7h | Leeg wit venster | 0 figuren gedetecteerd, geen crash |
+
+**Extractie verificatie**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.8a | Uitgesneden figuur heeft verwachte kleur | Pixel sampling bevestigt kleur van de figuur |
+| TC-5.8b | Uitgesneden figuur heeft juiste aspect ratio | Breedte/hoogte ratio komt overeen met originele bounds |
+
+**Overlay integratie**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5.9a | Figuur-overlays verschijnen als .figure kind | AnalysisOverlay items hebben kind == .figure |
+| TC-5.9b | Figuur-overlays en tekst-overlays bestaan naast elkaar | Beide typen aanwezig in overlay array |
+| TC-5.9c | figureCount in CaptureState.analyzed is correct | Aantal komt overeen met gedetecteerde figuren |
 
 ---
 
@@ -589,3 +683,64 @@ Als ontwikkelaar wil ik de applicatie via de Mac App Store kunnen distribueren z
 | `ScrollCaptureProvider` | `AccessibilityScrollCapture` | `StreamScrollCapture` |
 | `ExportDestination` | `FileSystemExport` | `SandboxedExport` |
 | `PermissionManager` | `LocalPermissionManager` | `SandboxPermissionManager` |
+
+---
+
+## UC-9: Intelligente Tekst Structurering (NICE TO HAVE)
+
+**Status:** `BACKLOG`
+
+> **Dit is een toekomstige nice-to-have.** Wordt pas overwogen nadat de kern-pipeline
+> (UC-1 t/m UC-7) volledig is en er behoefte is aan geavanceerdere tekst-analyse.
+
+### Beschrijving
+Als gebruiker wil ik dat de herkende tekst (uit UC-4) optioneel kan worden verrijkt met structuurherkenning — zoals het identificeren van koppen, tabellen, contactgegevens, datums en andere entiteiten — zodat de export (UC-7) rijkere en beter bruikbare output levert.
+
+### Aanleiding
+Google's open-source [LangExtract](https://github.com/google/langextract) library biedt LLM-powered extractie van gestructureerde data uit ongestructureerde tekst. Dit is geen OCR-vervanging maar een **post-OCR verrijkingsstap**.
+
+### Mogelijke aanpak
+1. OCR pipeline (UC-4) levert platte tekst op (bestaand, on-device)
+2. Optionele verrijkingsstap stuurt tekst naar een LLM (lokaal of cloud) voor structuurherkenning
+3. LLM identificeert: koppen, tabellen, lijsten, contactgegevens, datums, bedragen
+4. Gestructureerde output wordt gebruikt in export (UC-7) voor rijkere Markdown
+
+### Technologie-opties
+| Optie | Voordeel | Nadeel |
+|-------|----------|--------|
+| Google LangExtract (Python, Gemini) | Productie-rijp, source grounding | Cloud-afhankelijk, Python (niet Swift native) |
+| Lokaal LLM (MLX, llama.cpp) | 100% on-device, geen API key | Grotere app, langzamere verwerking |
+| Apple Foundation Models (macOS 26+) | Native Swift, on-device | Alleen macOS 26+, beperkte capabilities |
+
+### Randvoorwaarden
+- **Optioneel** — kernfunctionaliteit (OCR + figuurdetectie) blijft 100% on-device
+- **Opt-in** — gebruiker kiest expliciet voor verrijking (privacy)
+- **Graceful degradation** — als verrijking niet beschikbaar is, valt terug op plain tekst
+- **Geen blokkering van export** — verrijking mag export niet vertragen bij afwezigheid
+
+### Classificatie
+| Onderdeel | Classificatie |
+|-----------|--------------|
+| Gehele UC-9 | `NICE TO HAVE` — pas na UC-1 t/m UC-7 |
+
+---
+
+## Bevindingen
+
+### BUG-1: Figuur links afgesneden in UI (DenHaagDoet)
+
+**Status:** `OPEN`
+**Gevonden:** 2026-03-12
+**Component:** UI / ResultsPanel
+
+**Beschrijving:**
+Bij de DenHaagDoet hero banner wordt de linkerkant van de geëxtraheerde figuur afgesneden in de app UI. De detectie-pipeline levert correcte bounds (x=0.000, width=0.997, extracted 1920×340px, left whitespace 0px), maar de weergave in het results panel snijdt links content weg.
+
+**Root cause:** Vermoedelijk in de UI-laag (ResultsPanel / FigureDetailView), niet in FigureDetector.
+
+**Reproduce:**
+1. `make run`
+2. Capture de DenHaagDoet testafbeelding
+3. Bekijk de geëxtraheerde figuur in het results panel → linkerkant is afgesneden
+
+**Verwacht:** Volledige figuur zichtbaar zonder afsnijding

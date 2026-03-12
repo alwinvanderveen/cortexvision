@@ -11,6 +11,7 @@ public final class AppViewModel: ObservableObject {
     @Published var capturedImage: CGImage?
     @Published var analysisOverlays: [AnalysisOverlay] = []
     @Published var ocrResult: OCRResult?
+    @Published var figureResult: FigureDetectionResult?
     @Published var showWindowPicker = false
     @Published var availableWindows: [WindowInfo] = []
     @Published var permissionError: String?
@@ -25,6 +26,7 @@ public final class AppViewModel: ObservableObject {
     private(set) var permissionManager: PermissionManager?
     private let regionSelector = RegionSelector()
     private let ocrEngine = OCREngine()
+    private let figureDetector = FigureDetector()
 
     // MARK: - Computed Properties
 
@@ -109,6 +111,7 @@ public final class AppViewModel: ObservableObject {
         capturedImage = nil
         analysisOverlays = []
         ocrResult = nil
+        figureResult = nil
         captureState = .idle
 
         // Check permission (silent preflight first, prompt only if needed)
@@ -173,7 +176,7 @@ public final class AppViewModel: ObservableObject {
             let result = try await provider.captureWindow(id: window.id)
             capturedImage = result.image
             captureState = .captured(width: result.image.width, height: result.image.height)
-            await runOCR(on: result.image)
+            await runAnalysis(on: result.image)
         } catch {
             captureState = .error(error.localizedDescription)
         }
@@ -203,27 +206,36 @@ public final class AppViewModel: ObservableObject {
             let result = try await provider.captureRegion(rect)
             capturedImage = result.image
             captureState = .captured(width: result.image.width, height: result.image.height)
-            await runOCR(on: result.image)
+            await runAnalysis(on: result.image)
         } catch {
             captureState = .error(error.localizedDescription)
         }
     }
 
-    // MARK: - OCR Analysis
+    // MARK: - Analysis (OCR + Figure Detection)
 
-    private func runOCR(on image: CGImage) async {
+    private func runAnalysis(on image: CGImage) async {
         captureState = .analyzing
         analysisOverlays = []
         ocrResult = nil
+        figureResult = nil
 
         do {
-            let result = try await ocrEngine.recognizeText(in: image)
-            ocrResult = result
+            // Run OCR first (we need text bounds for figure exclusion)
+            let ocrRes = try await ocrEngine.recognizeText(in: image)
+            ocrResult = ocrRes
 
-            // Convert text blocks to analysis overlays for the preview.
+            // Run figure detection with text exclusion
+            let textBounds = ocrRes.textBlocks.map(\.bounds)
+            let figureRes = try await figureDetector.detectFigures(in: image, textBounds: textBounds)
+            figureResult = figureRes
+
+            // Build overlays: text (blue) + figures (green)
             // Vision uses bottom-left origin (y=0 at bottom), but SwiftUI/CGImage
             // use top-left origin (y=0 at top), so flip the Y coordinate.
-            analysisOverlays = result.textBlocks.map { block in
+            var overlays: [AnalysisOverlay] = []
+
+            overlays += ocrRes.textBlocks.map { block in
                 AnalysisOverlay(
                     bounds: CGRect(
                         x: block.bounds.origin.x,
@@ -236,9 +248,31 @@ public final class AppViewModel: ObservableObject {
                 )
             }
 
-            captureState = .analyzed(wordCount: result.wordCount, figureCount: 0)
+            overlays += figureRes.figures.map { figure in
+                AnalysisOverlay(
+                    bounds: CGRect(
+                        x: figure.bounds.origin.x,
+                        y: 1.0 - figure.bounds.origin.y - figure.bounds.height,
+                        width: figure.bounds.width,
+                        height: figure.bounds.height
+                    ),
+                    kind: .figure,
+                    label: figure.label
+                )
+            }
+
+            analysisOverlays = overlays
+            captureState = .analyzed(wordCount: ocrRes.wordCount, figureCount: figureRes.figures.count)
         } catch {
-            captureState = .error("OCR failed: \(error.localizedDescription)")
+            captureState = .error("Analysis failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Toggle selection state of a detected figure by index.
+    func toggleFigureSelection(at index: Int) {
+        guard var result = figureResult, index < result.figures.count else { return }
+        var figures = result.figures
+        figures[index].isSelected.toggle()
+        figureResult = FigureDetectionResult(figures: figures)
     }
 }

@@ -7,11 +7,21 @@ APP_BUNDLE := .build/CortexVision.app
 
 .PHONY: test test-capture dashboard clean run app start
 
-## Run all tests (including capture) with coverage and generate dashboard data.
+## Run all tests (or a filtered subset) with coverage and generate dashboard data.
 ## Uses swift test so the process inherits Terminal's screen recording permission.
+##
+## Usage:
+##   make test                              # all tests
+##   make test FILTER="Figure in middle"    # only tests matching filter
+##   make test FILTER=DocLayout             # only DocLayout tests
+##   make test FILTER=heroBanner            # match by function name
+##   make test FILTER=heroBanner DEBUG=1    # with figure detection debug output
+FILTER ?=
+DEBUG ?=
+
 test:
-	@echo "==> Running tests with coverage..."
-	@swift test --enable-code-coverage 2>&1 | tee /tmp/cortexvision-test-output.txt | tail -60; \
+	@echo "==> Running tests with coverage...$(if $(FILTER), (filter: $(FILTER)),)$(if $(DEBUG), (debug: ON),)"
+	@FIGURE_DEBUG=$(DEBUG) swift test --enable-code-coverage $(if $(FILTER),--filter '$(FILTER)',) 2>&1 | tee /tmp/cortexvision-test-output.txt > /dev/null; \
 	TEST_EXIT=$${PIPESTATUS[0]}; \
 	echo "==> Generating coverage report..."; \
 	BIN_DIR=$$(swift build --show-bin-path 2>/dev/null); \
@@ -25,6 +35,13 @@ test:
 	fi; \
 	echo "==> Parsing results..."; \
 	swift Scripts/parse-results.swift /tmp/cortexvision-test-output.txt $(COVERAGE_JSON) $(OUTPUT_DIR) $(PROJECT_ROOT); \
+	FAILURES=$$(grep '✘ Test ".*" failed' /tmp/cortexvision-test-output.txt); \
+	if [ -n "$$FAILURES" ]; then \
+		echo ""; \
+		echo "==> FAILED TESTS:"; \
+		echo "$$FAILURES" | sed 's/.*Test "\(.*\)" failed.*/  ✘ \1/'; \
+		echo ""; \
+	fi; \
 	echo "==> Done."; \
 	exit $$TEST_EXIT
 

@@ -673,5 +673,113 @@
     "input": "600x300 window with NSScrollView containing 10 paragraphs with unique keywords",
     "expectedOutput": "ALPHA, BRAVO, CHARLIE found; HOTEL, INDIA, JULIET not found; multiple text blocks; >10 words",
     "tags": ["ocr", "capture"]
+  },
+  "Text to the right of figure → adjacentRight": {
+    "id": "TC-5.17a",
+    "category": "Figures",
+    "functional": "Text positioned to the right of a figure is classified as adjacentRight, ensuring only the right edge expansion is blocked",
+    "technical": "Figure at x=0.05..0.35, text at x=0.37. classifyTextRelation returns .adjacentRight",
+    "input": "Figure rect (0.05, 0.20, 0.30, 0.60), text rect (0.37, 0.30, 0.50, 0.03)",
+    "expectedOutput": ".adjacentRight",
+    "tags": ["figures"]
+  },
+  "Text to the left of figure → adjacentLeft": {
+    "id": "TC-5.17b",
+    "category": "Figures",
+    "functional": "Text positioned to the left of a figure is classified as adjacentLeft",
+    "technical": "Figure at x=0.50..0.90, text ending at x=0.48. classifyTextRelation returns .adjacentLeft",
+    "input": "Figure rect (0.50, 0.20, 0.40, 0.60), text rect (0.18, 0.30, 0.30, 0.03)",
+    "expectedOutput": ".adjacentLeft",
+    "tags": ["figures"]
+  },
+  "Text below figure → adjacentBelow": {
+    "id": "TC-5.17c",
+    "category": "Figures",
+    "functional": "Text positioned below a figure is classified as adjacentBelow, blocking only bottom expansion",
+    "technical": "Figure at y=0.40..0.90, text at y=0.35. classifyTextRelation returns .adjacentBelow",
+    "input": "Figure rect (0.05, 0.40, 0.90, 0.50), text rect (0.10, 0.35, 0.70, 0.03)",
+    "expectedOutput": ".adjacentBelow",
+    "tags": ["figures"]
+  },
+  "Text above figure → adjacentAbove": {
+    "id": "TC-5.17d",
+    "category": "Figures",
+    "functional": "Text positioned above a figure is classified as adjacentAbove",
+    "technical": "Figure at y=0.10..0.40, text at y=0.42. classifyTextRelation returns .adjacentAbove",
+    "input": "Figure rect (0.05, 0.10, 0.90, 0.30), text rect (0.10, 0.42, 0.70, 0.03)",
+    "expectedOutput": ".adjacentAbove",
+    "tags": ["figures"]
+  },
+  "Text overlapping figure → overlapping": {
+    "id": "TC-5.17e",
+    "category": "Figures",
+    "functional": "Text inside a figure region is classified as overlapping",
+    "technical": "Text rect fully inside figure rect. classifyTextRelation returns .overlapping",
+    "input": "Figure rect (0.10, 0.20, 0.50, 0.50), text rect (0.30, 0.40, 0.40, 0.03)",
+    "expectedOutput": ".overlapping",
+    "tags": ["figures"]
+  },
+  "Text far from figure → disjoint": {
+    "id": "TC-5.17f",
+    "category": "Figures",
+    "functional": "Text far away from a figure has no spatial relationship",
+    "technical": "Figure in top-left, text in bottom-right. classifyTextRelation returns .disjoint",
+    "input": "Figure rect (0.05, 0.05, 0.20, 0.20), text rect (0.70, 0.70, 0.20, 0.03)",
+    "expectedOutput": ".disjoint",
+    "tags": ["figures"]
+  },
+  "Text barely touching right edge (sub-pixel) → adjacentRight, NOT overlapping": {
+    "id": "TC-5.17g",
+    "category": "Figures",
+    "functional": "Text with sub-pixel overlap on the right edge is correctly classified as adjacent (not overlapping), preventing false vertical expansion blocking",
+    "technical": "Propinion scenario: figure maxX=0.369, text minX=0.368. Sub-pixel overlap classified as adjacentRight",
+    "input": "Figure rect (0.04, 0.35, 0.329, 0.57), text rect (0.368, 0.47, 0.60, 0.03)",
+    "expectedOutput": ".adjacentRight",
+    "tags": ["figures"]
+  },
+  "Text below wide figure with full horizontal span → adjacentBelow": {
+    "id": "TC-5.17h",
+    "category": "Figures",
+    "functional": "Text below a full-width hero banner is classified as adjacentBelow",
+    "technical": "Hero banner scenario: full-width figure, text just below. classifyTextRelation returns .adjacentBelow",
+    "input": "Figure rect (0.00, 0.50, 1.00, 0.40), text rect (0.05, 0.45, 0.85, 0.03)",
+    "expectedOutput": ".adjacentBelow",
+    "tags": ["figures"]
+  },
+  "Blocked edges: text right blocks only right expansion": {
+    "id": "TC-5.17i",
+    "category": "Figures",
+    "functional": "When text is adjacent to the right of a figure, only the right edge is blocked for expansion — top, bottom, and left remain free",
+    "technical": "blockedExpansionEdges with text to the right returns {.right} only",
+    "input": "Figure with 2 text blocks to its right",
+    "expectedOutput": "blocked = {.right}",
+    "tags": ["figures"]
+  },
+  "Blocked edges: text below blocks only bottom expansion": {
+    "id": "TC-5.17j",
+    "category": "Figures",
+    "functional": "When text is adjacent below a figure, only the bottom edge is blocked — top, left, and right remain free",
+    "technical": "blockedExpansionEdges with text below returns {.bottom} only",
+    "input": "Wide figure with 2 text blocks below",
+    "expectedOutput": "blocked = {.bottom}",
+    "tags": ["figures"]
+  },
+  "Real cutout: circular photo detected alongside text": {
+    "id": "TC-5.16b",
+    "category": "Figures",
+    "functional": "Propinion circular photo (2168×1256) next to text columns is extracted with correct proportions using spatial relation classifier. Text to the right blocks only right expansion, allowing full vertical circle capture.",
+    "technical": "Load Image/testPropinionEdges.png, run OCR + FigureDetector. Verify: width ≥550px, height ≥800px, aspect 0.55-0.85:1, color variance >25, no body text",
+    "input": "Image/testPropinionEdges.png (2168x1256 PNG with circular photo left, text right)",
+    "expectedOutput": "1 figure: ≥550px wide, ≥800px tall, aspect 0.55-0.85:1",
+    "tags": ["figures", "verification"]
+  },
+  "Real cutout: hero photo extracted without bottom whitespace": {
+    "id": "TC-5.16a",
+    "category": "Figures",
+    "functional": "DenHaagDoet hero banner (1926x742) extracted as wide figure without bottom whitespace",
+    "technical": "Load Image/testEdgesDenHaagDoet.png, run OCR + FigureDetector. Verify: 1 figure, width >95%, aspect >4:1, <2% white on all edges",
+    "input": "Image/testEdgesDenHaagDoet.png (1926x742 PNG with hero photo + text below)",
+    "expectedOutput": "1 figure: width >95%, aspect >4:1, <2% white edges",
+    "tags": ["figures", "verification"]
   }
 }

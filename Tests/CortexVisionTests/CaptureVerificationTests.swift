@@ -620,6 +620,541 @@ struct CaptureVerificationTests {
                 "Should find significant word count in visible area")
     }
 
+    // MARK: - Figure Detection Tests
+
+    @Test("Hero banner above text: figure detected without text bleeding",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func heroBannerAboveText() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.heroBanner(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect hero banner as figure, got \(figureResult.figures.count)")
+
+        if let hero = figureResult.figures.first {
+            #expect(hero.bounds.width > 0.50,
+                    "Hero should span >50% of width, got \(hero.bounds.width)")
+            #expect(hero.bounds.height < 0.60,
+                    "Hero should not include text (height <60%), got \(hero.bounds.height)")
+
+            if let img = hero.extractedImage {
+                let aspect = CGFloat(img.width) / CGFloat(img.height)
+                #expect(aspect > 1.5,
+                        "Hero should be banner-shaped (aspect >1.5:1), got \(String(format: "%.1f", aspect)):1")
+            }
+        }
+
+        let fullText = ocrResult.fullText.lowercased()
+        #expect(fullText.contains("toon") || fullText.contains("vacatures"),
+                "Should recognize text below hero: \(fullText)")
+    }
+
+    @Test("Region cutout with hero and text: figure separated from text",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func regionCutoutHeroAndText() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.heroCutout(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect hero in cutout, got \(figureResult.figures.count)")
+
+        if let hero = figureResult.figures.first {
+            #expect(hero.bounds.minY > 0.10,
+                    "Hero should not include text area, got minY=\(hero.bounds.minY)")
+
+            if let img = hero.extractedImage {
+                let aspect = CGFloat(img.width) / CGFloat(img.height)
+                #expect(aspect > 1.5,
+                        "Extracted hero should be banner-shaped, got aspect \(String(format: "%.1f", aspect)):1")
+            }
+        }
+    }
+
+    // MARK: - Structural Validation: Figure Position & Contrast Variants
+
+    /// Generic helper: creates a reference window with a configurable figure and text layout,
+    /// captures it, runs the full pipeline, and returns diagnostic info.
+    @MainActor
+    private func runFigureTest(
+        label: String,
+        windowSize: CGSize = CGSize(width: 700, height: 500),
+        background: NSColor,
+        figurePosition: FigurePosition,
+        figureHeight: CGFloat = 0.35,
+        figureColors: [NSColor],
+        textColor: NSColor = .black,
+        subjectShape: Bool = true
+    ) async throws -> (figureCount: Int, firstBounds: CGRect?, firstAspect: CGFloat?) {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.configurable(
+            on: screen, size: windowSize,
+            background: background, figurePosition: figurePosition,
+            figureHeight: figureHeight, figureColors: figureColors,
+            textColor: textColor, subjectShape: subjectShape
+        )
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        let firstBounds = figureResult.figures.first?.bounds
+        var firstAspect: CGFloat?
+        if let img = figureResult.figures.first?.extractedImage {
+            firstAspect = CGFloat(img.width) / CGFloat(img.height)
+        }
+
+        print("  [\(label)] figures=\(figureResult.figures.count)" +
+              (firstBounds != nil ? " bounds=(w=\(String(format: "%.2f", firstBounds!.width)) h=\(String(format: "%.2f", firstBounds!.height)))" : "") +
+              (firstAspect != nil ? " aspect=\(String(format: "%.1f", firstAspect!)):1" : ""))
+
+        return (figureResult.figures.count, firstBounds, firstAspect)
+    }
+
+    // --- High contrast variants (figure clearly distinct from background) ---
+
+    @Test("High contrast: dark figure on white bg, figure at top",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func highContrastDarkOnWhiteTop() async throws {
+        let r = try await runFigureTest(
+            label: "HC-dark-white-top",
+            background: .white,
+            figurePosition: .top,
+            figureColors: [
+                NSColor(red: 0.15, green: 0.30, blue: 0.50, alpha: 1),
+                NSColor(red: 0.40, green: 0.25, blue: 0.15, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect high-contrast figure")
+        if let h = r.firstBounds?.height { #expect(h < 0.60, "Should not bleed into text, height=\(h)") }
+    }
+
+    @Test("High contrast: dark figure on white bg, figure at bottom",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func highContrastDarkOnWhiteBottom() async throws {
+        let r = try await runFigureTest(
+            label: "HC-dark-white-bottom",
+            background: .white,
+            figurePosition: .bottom,
+            figureColors: [
+                NSColor(red: 0.20, green: 0.35, blue: 0.50, alpha: 1),
+                NSColor(red: 0.45, green: 0.30, blue: 0.20, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect figure at bottom")
+        if let h = r.firstBounds?.height { #expect(h < 0.60, "Should not bleed into text, height=\(h)") }
+    }
+
+    @Test("High contrast: light figure on dark bg",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func highContrastLightOnDark() async throws {
+        let r = try await runFigureTest(
+            label: "HC-light-dark",
+            background: NSColor(white: 0.18, alpha: 1),
+            figurePosition: .top,
+            figureColors: [
+                NSColor(red: 0.60, green: 0.70, blue: 0.80, alpha: 1),
+                NSColor(red: 0.75, green: 0.65, blue: 0.55, alpha: 1),
+            ],
+            textColor: NSColor(white: 0.90, alpha: 1)
+        )
+        #expect(r.figureCount >= 1, "Should detect light figure on dark bg")
+        if let h = r.firstBounds?.height { #expect(h < 0.60, "Should not bleed into text, height=\(h)") }
+    }
+
+    // --- Medium contrast variants ---
+
+    @Test("Medium contrast: muted figure on light gray bg",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func mediumContrastGrayBg() async throws {
+        let r = try await runFigureTest(
+            label: "MC-gray",
+            background: NSColor(white: 0.93, alpha: 1),
+            figurePosition: .top,
+            figureColors: [
+                NSColor(red: 0.40, green: 0.50, blue: 0.55, alpha: 1),
+                NSColor(red: 0.50, green: 0.45, blue: 0.40, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect medium-contrast figure on gray")
+        if let h = r.firstBounds?.height { #expect(h < 0.60, "Should not bleed, height=\(h)") }
+    }
+
+    @Test("Medium contrast: warm figure on cream bg",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func mediumContrastCreamBg() async throws {
+        let r = try await runFigureTest(
+            label: "MC-cream",
+            background: NSColor(red: 0.96, green: 0.94, blue: 0.91, alpha: 1),
+            figurePosition: .top,
+            figureColors: [
+                NSColor(red: 0.45, green: 0.50, blue: 0.40, alpha: 1),
+                NSColor(red: 0.55, green: 0.45, blue: 0.35, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect medium-contrast figure on cream")
+        if let h = r.firstBounds?.height { #expect(h < 0.60, "Should not bleed, height=\(h)") }
+    }
+
+    // --- Low contrast variants ---
+
+    @Test("Low contrast: subtle figure on light gray bg",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func lowContrastSubtleOnGray() async throws {
+        let r = try await runFigureTest(
+            label: "LC-subtle-gray",
+            background: NSColor(white: 0.92, alpha: 1),
+            figurePosition: .top,
+            figureColors: [
+                NSColor(white: 0.78, alpha: 1),  // only 14% brightness difference
+                NSColor(white: 0.70, alpha: 1),
+            ],
+            subjectShape: false  // no dark shape, just gradient
+        )
+        // Low contrast may or may not be detected — but if detected, should not bleed
+        if r.figureCount >= 1, let h = r.firstBounds?.height {
+            #expect(h < 0.60, "If detected, should not bleed into text, height=\(h)")
+        }
+    }
+
+    // --- Position variants (same figure, different placement) ---
+
+    @Test("Figure in middle third with text above and below",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func figureInMiddle() async throws {
+        let r = try await runFigureTest(
+            label: "Position-middle",
+            background: .white,
+            figurePosition: .middle,
+            figureColors: [
+                NSColor(red: 0.20, green: 0.40, blue: 0.55, alpha: 1),
+                NSColor(red: 0.50, green: 0.35, blue: 0.25, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect figure in middle")
+        if let h = r.firstBounds?.height { #expect(h < 0.55, "Should not include text above or below, height=\(h)") }
+    }
+
+    @Test("Tall narrow figure (portrait aspect) on white bg",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func tallNarrowFigure() async throws {
+        let r = try await runFigureTest(
+            label: "Tall-narrow",
+            windowSize: CGSize(width: 400, height: 600),
+            background: .white,
+            figurePosition: .top,
+            figureHeight: 0.50,
+            figureColors: [
+                NSColor(red: 0.25, green: 0.45, blue: 0.55, alpha: 1),
+                NSColor(red: 0.40, green: 0.35, blue: 0.25, alpha: 1),
+            ]
+        )
+        #expect(r.figureCount >= 1, "Should detect tall figure")
+        if let h = r.firstBounds?.height { #expect(h < 0.70, "Should not include text below, height=\(h)") }
+    }
+
+    // --- Small figure variant ---
+
+    @Test("Small figure (15% height) above dense text",
+          .tags(.figures, .capture), .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func smallFigureAboveDenseText() async throws {
+        let r = try await runFigureTest(
+            label: "Small-dense",
+            background: .white,
+            figurePosition: .top,
+            figureHeight: 0.15,
+            figureColors: [
+                NSColor(red: 0.15, green: 0.35, blue: 0.55, alpha: 1),
+                NSColor(red: 0.45, green: 0.40, blue: 0.30, alpha: 1),
+            ]
+        )
+        // Small figures may not pass minimum area threshold — that's acceptable
+        if r.figureCount >= 1, let h = r.firstBounds?.height {
+            #expect(h < 0.40, "Small figure should stay small, height=\(h)")
+        }
+    }
+
+    @Test("Text-only window produces no figures",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func textOnlyNoFigures() async throws {
+        let screen = NSScreen.main!
+        let ref = OCRReferenceWindow.singleParagraph(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let windowFrame = ref.window.frame
+        let contentRect = ref.window.contentLayoutRect
+        let contentScreenRect = CGRect(
+            x: windowFrame.origin.x + contentRect.origin.x,
+            y: windowFrame.origin.y + contentRect.origin.y,
+            width: contentRect.width,
+            height: contentRect.height
+        )
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(contentScreenRect)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count == 0,
+                "Text-only window should have 0 figures, got \(figureResult.figures.count)")
+    }
+
+    @Test("Empty window produces no figures",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func emptyWindowNoFigures() async throws {
+        let screen = NSScreen.main!
+        let ref = OCRReferenceWindow.emptyContent(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let windowFrame = ref.window.frame
+        let contentRect = ref.window.contentLayoutRect
+        let contentScreenRect = CGRect(
+            x: windowFrame.origin.x + contentRect.origin.x,
+            y: windowFrame.origin.y + contentRect.origin.y,
+            width: contentRect.width,
+            height: contentRect.height
+        )
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(contentScreenRect)
+        ref.close()
+
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(in: result.image)
+
+        #expect(figureResult.figures.count == 0,
+                "Empty content area should have 0 figures, got \(figureResult.figures.count)")
+    }
+
+    // MARK: - Realistic Background & Contrast Tests
+
+    @Test("Figure on light gray background (#F0F0F0) is detected",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func figureOnLightGrayBackground() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.photoOnBackground(
+            on: screen,
+            background: NSColor(white: 0.94, alpha: 1.0),  // #F0F0F0
+            photoColors: [
+                NSColor(red: 0.35, green: 0.50, blue: 0.45, alpha: 1.0),
+                NSColor(red: 0.50, green: 0.55, blue: 0.40, alpha: 1.0),
+            ]
+        )
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect photo on gray background, got \(figureResult.figures.count)")
+
+        if let fig = figureResult.figures.first {
+            #expect(fig.bounds.height < 0.60,
+                    "Figure should not include text below (height <60%), got \(fig.bounds.height)")
+        }
+    }
+
+    @Test("Figure on dark background (#2D2D2D) with light text is detected",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func figureOnDarkBackground() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.photoOnBackground(
+            on: screen,
+            background: NSColor(white: 0.18, alpha: 1.0),  // #2D2D2D
+            photoColors: [
+                NSColor(red: 0.55, green: 0.65, blue: 0.75, alpha: 1.0),
+                NSColor(red: 0.70, green: 0.60, blue: 0.50, alpha: 1.0),
+            ],
+            textColor: NSColor(white: 0.90, alpha: 1.0)  // light text
+        )
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect photo on dark background, got \(figureResult.figures.count)")
+
+        if let fig = figureResult.figures.first {
+            #expect(fig.bounds.height < 0.60,
+                    "Figure should not include text (height <60%), got \(fig.bounds.height)")
+        }
+    }
+
+    @Test("Figure on cream background (#F5F0E8) is detected",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func figureOnCreamBackground() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.photoOnBackground(
+            on: screen,
+            background: NSColor(red: 0.96, green: 0.94, blue: 0.91, alpha: 1.0),  // #F5F0E8
+            photoColors: [
+                NSColor(red: 0.40, green: 0.55, blue: 0.50, alpha: 1.0),
+                NSColor(red: 0.55, green: 0.50, blue: 0.40, alpha: 1.0),
+            ]
+        )
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect photo on cream background, got \(figureResult.figures.count)")
+
+        if let fig = figureResult.figures.first {
+            #expect(fig.bounds.height < 0.60,
+                    "Figure should not include text (height <60%), got \(fig.bounds.height)")
+        }
+    }
+
+    @Test("Low contrast hero: photo top edge fades into light gray background",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func lowContrastHeroTopEdge() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.lowContrastHero(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect low-contrast hero photo, got \(figureResult.figures.count)")
+
+        if let hero = figureResult.figures.first {
+            #expect(hero.bounds.height < 0.60,
+                    "Hero should not bleed into text below, got height \(hero.bounds.height)")
+
+            if let img = hero.extractedImage {
+                let aspect = CGFloat(img.width) / CGFloat(img.height)
+                #expect(aspect > 1.5,
+                        "Low contrast hero should still be banner-shaped, got \(String(format: "%.1f", aspect)):1")
+            }
+        }
+    }
+
+    @Test("Subtle figure: pastel diagram on off-white background",
+          .tags(.figures, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func subtlePastelFigure() async throws {
+        let screen = NSScreen.main!
+        let ref = FigureReferenceWindow.subtleDiagram(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.window.frame)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let detector = FigureDetector()
+        let figureResult = try await detector.detectFigures(
+            in: result.image, textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        #expect(figureResult.figures.count >= 1,
+                "Should detect subtle pastel diagram, got \(figureResult.figures.count)")
+
+        if let fig = figureResult.figures.first {
+            #expect(fig.bounds.height < 0.65,
+                    "Figure should not include text (height <65%), got \(fig.bounds.height)")
+        }
+    }
+
     // MARK: - Helpers
 
     private func decodeQR(from image: CGImage) throws -> String? {
@@ -992,6 +1527,518 @@ private final class OCRParagraphsView: NSView {
                 y -= 24
             }
             y -= 20
+        }
+    }
+}
+
+// MARK: - Figure Reference Windows
+
+@MainActor
+/// Position of the figure within the reference window.
+private enum FigurePosition {
+    case top     // figure at top, text below
+    case bottom  // text at top, figure at bottom
+    case middle  // text above and below figure
+}
+
+private final class FigureReferenceWindow {
+    let window: NSWindow
+
+    /// Configurable reference window with a figure (gradient + optional shape) and text.
+    static func configurable(
+        on screen: NSScreen,
+        size: CGSize,
+        background: NSColor,
+        figurePosition: FigurePosition,
+        figureHeight: CGFloat,
+        figureColors: [NSColor],
+        textColor: NSColor,
+        subjectShape: Bool
+    ) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: size) { frame in
+            ConfigurableFigureView(
+                frame: frame,
+                background: background,
+                figurePosition: figurePosition,
+                figureHeight: figureHeight,
+                figureColors: figureColors,
+                textColor: textColor,
+                subjectShape: subjectShape
+            )
+        }
+    }
+
+    static func heroBanner(on screen: NSScreen) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: CGSize(width: 800, height: 600),
+                                     view: HeroBannerView.self)
+    }
+
+    static func heroCutout(on screen: NSScreen) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: CGSize(width: 800, height: 280),
+                                     view: HeroCutoutView.self)
+    }
+
+    /// Photo on a configurable background color with text below.
+    static func photoOnBackground(
+        on screen: NSScreen,
+        background: NSColor,
+        photoColors: [NSColor],
+        textColor: NSColor = .black
+    ) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: CGSize(width: 700, height: 500)) { frame in
+            PhotoOnBackgroundView(
+                frame: frame,
+                background: background,
+                photoColors: photoColors,
+                textColor: textColor
+            )
+        }
+    }
+
+    /// Hero photo whose top edge fades into a light gray background (low contrast).
+    static func lowContrastHero(on screen: NSScreen) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: CGSize(width: 800, height: 500),
+                                     view: LowContrastHeroView.self)
+    }
+
+    /// Subtle pastel-colored diagram on off-white background.
+    static func subtleDiagram(on screen: NSScreen) -> FigureReferenceWindow {
+        return FigureReferenceWindow(on: screen, size: CGSize(width: 700, height: 500),
+                                     view: SubtleDiagramView.self)
+    }
+
+    private init(on screen: NSScreen, size: CGSize, view viewType: NSView.Type) {
+        let screenFrame = screen.frame
+        let origin = NSPoint(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.midY - size.height / 2
+        )
+        window = NSWindow(
+            contentRect: NSRect(origin: origin, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.title = "Figure Test Reference"
+        window.backgroundColor = .white
+        window.level = .floating
+
+        let view = viewType.init(frame: NSRect(origin: .zero, size: size))
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        view.display()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private init(on screen: NSScreen, size: CGSize, viewBuilder: (NSRect) -> NSView) {
+        let screenFrame = screen.frame
+        let origin = NSPoint(
+            x: screenFrame.midX - size.width / 2,
+            y: screenFrame.midY - size.height / 2
+        )
+        window = NSWindow(
+            contentRect: NSRect(origin: origin, size: size),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false,
+            screen: screen
+        )
+        window.title = "Figure Test Reference"
+        window.level = .floating
+
+        let view = viewBuilder(NSRect(origin: .zero, size: size))
+        window.contentView = view
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+        view.display()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func close() { window.orderOut(nil) }
+}
+
+/// Hero banner (colorful gradient) at top, heading + body text below.
+private final class HeroBannerView: NSView {
+    override init(frame: NSRect) { super.init(frame: frame) }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill()
+        bounds.fill()
+
+        // Hero banner: full-width, ~25% of height, with strong colors
+        let heroHeight = round(bounds.height * 0.25)
+        let heroRect = NSRect(x: 0, y: bounds.height - heroHeight,
+                              width: bounds.width, height: heroHeight)
+
+        // Draw a colorful gradient (simulates a photo banner)
+        if let gradient = NSGradient(colors: [
+            NSColor(red: 0.15, green: 0.35, blue: 0.55, alpha: 1.0),
+            NSColor(red: 0.30, green: 0.50, blue: 0.40, alpha: 1.0),
+            NSColor(red: 0.55, green: 0.45, blue: 0.30, alpha: 1.0),
+        ]) {
+            gradient.draw(in: heroRect, angle: 0)
+        }
+
+        // Draw a "person" silhouette in the banner (dark shape for instance mask)
+        NSColor(red: 0.10, green: 0.10, blue: 0.15, alpha: 1.0).setFill()
+        let personRect = NSRect(
+            x: bounds.width * 0.35, y: heroRect.minY + 5,
+            width: bounds.width * 0.15, height: heroHeight - 10
+        )
+        NSBezierPath(ovalIn: personRect).fill()
+
+        // Heading below hero
+        var y = heroRect.minY - 35
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 22, weight: .bold),
+            .foregroundColor: NSColor.black,
+        ]
+        "Toon vacatures op jouw eigen website".draw(
+            at: NSPoint(x: 40, y: y), withAttributes: headingAttrs)
+        y -= 30
+
+        // Body text
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 14, weight: .regular),
+            .foregroundColor: NSColor.black,
+        ]
+        for line in [
+            "Heb je vacatures geplaatst op Den Haag Doet? Je kunt de vacatures",
+            "nu ook eenvoudig doorplaatsen op jouw eigen website.",
+            "Neem hiervoor eventueel contact op met de IT-afdeling",
+            "binnen jouw organisatie om je hierbij te helpen.",
+        ] {
+            line.draw(at: NSPoint(x: 40, y: y), withAttributes: bodyAttrs)
+            y -= 20
+        }
+    }
+}
+
+/// Hero banner touching the top edge (no nav), heading text below.
+/// Simulates a user-selected region capture of hero + caption.
+private final class HeroCutoutView: NSView {
+    override init(frame: NSRect) { super.init(frame: frame) }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.white.setFill()
+        bounds.fill()
+
+        // Hero fills top 60% (this is a cutout — hero dominates)
+        let heroHeight = round(bounds.height * 0.60)
+        let heroRect = NSRect(x: 0, y: bounds.height - heroHeight,
+                              width: bounds.width, height: heroHeight)
+
+        if let gradient = NSGradient(colors: [
+            NSColor(red: 0.20, green: 0.40, blue: 0.55, alpha: 1.0),
+            NSColor(red: 0.35, green: 0.50, blue: 0.35, alpha: 1.0),
+        ]) {
+            gradient.draw(in: heroRect, angle: 45)
+        }
+
+        // Dark shape for instance mask detection
+        NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1.0).setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: bounds.width * 0.30, y: heroRect.minY + 10,
+            width: bounds.width * 0.20, height: heroHeight - 20
+        )).fill()
+
+        // Heading text below
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 20, weight: .bold),
+            .foregroundColor: NSColor.black,
+        ]
+        "Toon vacatures op jouw eigen website".draw(
+            at: NSPoint(x: 40, y: heroRect.minY - 35), withAttributes: headingAttrs)
+    }
+}
+
+/// Photo region on a configurable background color, with text below.
+/// Tests detection on non-white backgrounds (gray, dark, cream).
+private final class PhotoOnBackgroundView: NSView {
+    private let background: NSColor
+    private let photoColors: [NSColor]
+    private let textColor: NSColor
+
+    init(frame: NSRect, background: NSColor, photoColors: [NSColor], textColor: NSColor) {
+        self.background = background
+        self.photoColors = photoColors
+        self.textColor = textColor
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        background.setFill()
+        bounds.fill()
+
+        // Photo region: top 35% of the view, full width
+        let photoHeight = round(bounds.height * 0.35)
+        let photoRect = NSRect(x: 0, y: bounds.height - photoHeight,
+                               width: bounds.width, height: photoHeight)
+
+        if let gradient = NSGradient(colors: photoColors) {
+            gradient.draw(in: photoRect, angle: 30)
+        }
+
+        // Darker shape inside photo for subject detection
+        let darkColor = NSColor(
+            red: max(0, photoColors[0].redComponent - 0.20),
+            green: max(0, photoColors[0].greenComponent - 0.20),
+            blue: max(0, photoColors[0].blueComponent - 0.15),
+            alpha: 1.0
+        )
+        darkColor.setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: bounds.width * 0.30, y: photoRect.minY + 8,
+            width: bounds.width * 0.18, height: photoHeight - 16
+        )).fill()
+
+        // Heading and body text below on the same background color
+        var y = photoRect.minY - 35
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 20, weight: .bold),
+            .foregroundColor: textColor,
+        ]
+        "Headline text on colored background".draw(
+            at: NSPoint(x: 30, y: y), withAttributes: headingAttrs)
+        y -= 30
+
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: textColor,
+        ]
+        for line in [
+            "This is body text rendered on a non-white background.",
+            "The figure detection pipeline must handle various background",
+            "colors including gray, dark, and cream tones correctly.",
+            "Text should be recognized and excluded from figures.",
+        ] {
+            line.draw(at: NSPoint(x: 30, y: y), withAttributes: bodyAttrs)
+            y -= 18
+        }
+    }
+}
+
+/// Hero photo whose top edge deliberately fades into the background.
+/// The top rows have brightness ~0.85 against a ~0.92 gray background,
+/// making the boundary subtle. Tests edge detection with low contrast.
+private final class LowContrastHeroView: NSView {
+    override init(frame: NSRect) { super.init(frame: frame) }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Light gray background (not white)
+        NSColor(white: 0.92, alpha: 1.0).setFill()
+        bounds.fill()
+
+        // Hero: top 30%, gradient from medium (center) to nearly-background (top edge)
+        let heroHeight = round(bounds.height * 0.30)
+        let heroRect = NSRect(x: 0, y: bounds.height - heroHeight,
+                              width: bounds.width, height: heroHeight)
+
+        // Key: top edge color (0.85) is very close to background (0.92)
+        if let gradient = NSGradient(colors: [
+            NSColor(white: 0.85, alpha: 1.0),         // top edge — almost background
+            NSColor(red: 0.45, green: 0.50, blue: 0.48, alpha: 1.0), // center — photo content
+            NSColor(red: 0.50, green: 0.45, blue: 0.40, alpha: 1.0), // bottom edge — warmer
+        ]) {
+            gradient.draw(in: heroRect, angle: 90)
+        }
+
+        // Subject shape
+        NSColor(red: 0.25, green: 0.25, blue: 0.30, alpha: 1.0).setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: bounds.width * 0.35, y: heroRect.minY + 5,
+            width: bounds.width * 0.15, height: heroHeight - 10
+        )).fill()
+
+        // Text below on same gray background
+        var y = heroRect.minY - 35
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 20, weight: .bold),
+            .foregroundColor: NSColor(white: 0.15, alpha: 1.0),
+        ]
+        "Toon vacatures op jouw eigen website".draw(
+            at: NSPoint(x: 30, y: y), withAttributes: headingAttrs)
+        y -= 28
+
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor(white: 0.20, alpha: 1.0),
+        ]
+        for line in [
+            "This hero image has a low-contrast top edge that fades",
+            "into the light gray page background. The pipeline must",
+            "detect the figure boundary despite the subtle transition.",
+        ] {
+            line.draw(at: NSPoint(x: 30, y: y), withAttributes: bodyAttrs)
+            y -= 18
+        }
+    }
+}
+
+/// Subtle pastel-colored diagram on off-white background.
+/// Low color variance — tests whether the pipeline can detect figures
+/// that don't have strong contrast against their background.
+private final class SubtleDiagramView: NSView {
+    override init(frame: NSRect) { super.init(frame: frame) }
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        // Off-white background
+        NSColor(red: 0.97, green: 0.96, blue: 0.94, alpha: 1.0).setFill()
+        bounds.fill()
+
+        // Pastel diagram area: top 40%, soft colors
+        let diagHeight = round(bounds.height * 0.40)
+        let diagRect = NSRect(x: 30, y: bounds.height - diagHeight - 10,
+                              width: bounds.width - 60, height: diagHeight)
+
+        // Light pastel background for diagram area
+        NSColor(red: 0.90, green: 0.92, blue: 0.95, alpha: 1.0).setFill()
+        NSBezierPath(roundedRect: diagRect, xRadius: 8, yRadius: 8).fill()
+
+        // Pastel bars (simulating a chart)
+        let barColors: [NSColor] = [
+            NSColor(red: 0.75, green: 0.85, blue: 0.80, alpha: 1.0),  // soft green
+            NSColor(red: 0.80, green: 0.78, blue: 0.88, alpha: 1.0),  // soft purple
+            NSColor(red: 0.88, green: 0.82, blue: 0.75, alpha: 1.0),  // soft orange
+            NSColor(red: 0.78, green: 0.85, blue: 0.90, alpha: 1.0),  // soft blue
+        ]
+        let barWidth: CGFloat = (diagRect.width - 80) / CGFloat(barColors.count)
+        for (i, color) in barColors.enumerated() {
+            let barH = diagRect.height * CGFloat(0.4 + 0.15 * Double(i))
+            let barRect = NSRect(
+                x: diagRect.minX + 20 + CGFloat(i) * (barWidth + 10),
+                y: diagRect.minY + 20,
+                width: barWidth,
+                height: barH
+            )
+            color.setFill()
+            NSBezierPath(roundedRect: barRect, xRadius: 4, yRadius: 4).fill()
+        }
+
+        // Text below diagram
+        var y = diagRect.minY - 35
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 18, weight: .semibold),
+            .foregroundColor: NSColor(white: 0.20, alpha: 1.0),
+        ]
+        "Quarterly Performance Overview".draw(
+            at: NSPoint(x: 30, y: y), withAttributes: headingAttrs)
+        y -= 25
+
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: NSColor(white: 0.30, alpha: 1.0),
+        ]
+        for line in [
+            "The diagram above shows subtle pastel colors that are",
+            "common in modern dashboard designs. These low-contrast",
+            "figures must still be detected and extracted correctly.",
+        ] {
+            line.draw(at: NSPoint(x: 30, y: y), withAttributes: bodyAttrs)
+            y -= 18
+        }
+    }
+}
+
+/// Generic configurable figure view for structural validation tests.
+/// Draws a gradient figure region at a configurable position with text elsewhere.
+private final class ConfigurableFigureView: NSView {
+    private let background: NSColor
+    private let figurePosition: FigurePosition
+    private let figureHeight: CGFloat
+    private let figureColors: [NSColor]
+    private let textColor: NSColor
+    private let subjectShape: Bool
+
+    init(frame: NSRect, background: NSColor, figurePosition: FigurePosition,
+         figureHeight: CGFloat, figureColors: [NSColor],
+         textColor: NSColor, subjectShape: Bool) {
+        self.background = background
+        self.figurePosition = figurePosition
+        self.figureHeight = figureHeight
+        self.figureColors = figureColors
+        self.textColor = textColor
+        self.subjectShape = subjectShape
+        super.init(frame: frame)
+    }
+
+    @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    override func draw(_ dirtyRect: NSRect) {
+        background.setFill()
+        bounds.fill()
+
+        let figH = round(bounds.height * figureHeight)
+        let figRect: NSRect
+        let textStartY: CGFloat
+
+        switch figurePosition {
+        case .top:
+            figRect = NSRect(x: 0, y: bounds.height - figH, width: bounds.width, height: figH)
+            textStartY = figRect.minY - 35
+        case .bottom:
+            figRect = NSRect(x: 0, y: 0, width: bounds.width, height: figH)
+            textStartY = figRect.maxY + bounds.height * 0.05
+        case .middle:
+            let midY = (bounds.height - figH) / 2
+            figRect = NSRect(x: 0, y: midY, width: bounds.width, height: figH)
+            textStartY = figRect.minY - 35
+        }
+
+        // Draw figure gradient
+        if let gradient = NSGradient(colors: figureColors) {
+            gradient.draw(in: figRect, angle: 30)
+        }
+
+        // Optional dark subject shape (improves instance mask detection)
+        if subjectShape {
+            let darkColor = NSColor(red: 0.08, green: 0.08, blue: 0.12, alpha: 1)
+            darkColor.setFill()
+            NSBezierPath(ovalIn: NSRect(
+                x: bounds.width * 0.30, y: figRect.minY + 5,
+                width: bounds.width * 0.18, height: figH - 10
+            )).fill()
+        }
+
+        // Draw text
+        let headingAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 18, weight: .bold),
+            .foregroundColor: textColor,
+        ]
+        let bodyAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 13, weight: .regular),
+            .foregroundColor: textColor,
+        ]
+
+        var y = textStartY
+        "Headline text for structural test".draw(at: NSPoint(x: 30, y: y), withAttributes: headingAttrs)
+        y -= 28
+        for line in [
+            "This is body text used to verify that the figure detection",
+            "pipeline correctly separates figures from adjacent text content.",
+            "The pipeline should detect the figure without bleeding into text.",
+            "Multiple lines of text ensure sufficient OCR coverage for testing.",
+        ] {
+            guard y > 10 else { break }
+            line.draw(at: NSPoint(x: 30, y: y), withAttributes: bodyAttrs)
+            y -= 18
+        }
+
+        // For middle position, also draw text above the figure
+        if figurePosition == .middle {
+            var topY = figRect.maxY + 10
+            "Text above the figure".draw(at: NSPoint(x: 30, y: topY), withAttributes: headingAttrs)
+            topY -= 25
+            "This paragraph appears above the figure region.".draw(
+                at: NSPoint(x: 30, y: topY), withAttributes: bodyAttrs)
         }
     }
 }
