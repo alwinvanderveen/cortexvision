@@ -10,9 +10,10 @@ import Vision
 let isCI: Bool = ProcessInfo.processInfo.environment["CI"] != nil
 
 /// Checks if screen recording permission is available (for integration tests).
-/// Uses a real SCShareableContent call since CGPreflightScreenCaptureAccess
-/// only reflects the permission of the specific bundle, not the test runner.
+/// On CI there is no screen recording permission, so skip immediately.
+/// Locally, uses a real SCShareableContent call with a tight timeout.
 let isScreenRecordingAvailable: Bool = {
+    if isCI { return false }
     let semaphore = DispatchSemaphore(value: 0)
     nonisolated(unsafe) var available = false
     Task.detached { @Sendable in
