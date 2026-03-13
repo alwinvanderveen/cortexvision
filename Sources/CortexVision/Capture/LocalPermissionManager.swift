@@ -4,7 +4,7 @@ import Foundation
 import ScreenCaptureKit
 
 /// Production implementation of PermissionManager for local (non-sandboxed) distribution.
-public final class LocalPermissionManager: PermissionManager {
+public final class LocalPermissionManager: PermissionManager, @unchecked Sendable {
     public init() {}
 
     public func screenRecordingStatus() -> PermissionStatus {
@@ -34,7 +34,8 @@ public final class LocalPermissionManager: PermissionManager {
     }
 
     public func requestAccessibility() async -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue(): true] as CFDictionary
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let options = [promptKey: kCFBooleanTrue!] as CFDictionary
         return AXIsProcessTrustedWithOptions(options)
     }
 

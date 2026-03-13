@@ -2,9 +2,10 @@ import AppKit
 import CoreGraphics
 
 /// Callback when a region is selected or cancelled.
-public typealias RegionSelectionHandler = (CGRect?) -> Void
+public typealias RegionSelectionHandler = @MainActor (CGRect?) -> Void
 
 /// Manages a fullscreen overlay for the user to draw a capture region.
+@MainActor
 public final class RegionSelector {
     private var overlayWindows: [NSWindow] = []
     private var completion: RegionSelectionHandler?

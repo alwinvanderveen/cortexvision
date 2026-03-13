@@ -1,9 +1,9 @@
-// swift-tools-version: 5.9
+// swift-tools-version: 6.2
 import PackageDescription
 
 let package = Package(
     name: "CortexVision",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v26)],
     products: [
         .library(name: "CortexVision", targets: ["CortexVision"]),
         .executable(name: "CortexVisionApp", targets: ["CortexVisionApp"]),

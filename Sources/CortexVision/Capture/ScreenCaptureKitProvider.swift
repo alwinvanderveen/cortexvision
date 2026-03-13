@@ -3,7 +3,7 @@ import Foundation
 import ScreenCaptureKit
 
 /// Production implementation of CaptureProvider using ScreenCaptureKit.
-public final class ScreenCaptureKitProvider: CaptureProvider {
+public final class ScreenCaptureKitProvider: CaptureProvider, @unchecked Sendable {
     public init() {}
 
     public func availableWindows() async throws -> [WindowInfo] {

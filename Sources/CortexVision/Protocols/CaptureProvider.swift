@@ -48,7 +48,7 @@ public struct WindowInfo: Identifiable, Hashable {
 /// Abstracts screen and window capture functionality.
 /// Current implementation: ScreenCaptureKit (local).
 /// Future App Store implementation: same (sandbox-compatible with entitlement).
-public protocol CaptureProvider {
+public protocol CaptureProvider: Sendable {
     /// Lists all available windows that can be captured.
     func availableWindows() async throws -> [WindowInfo]
 

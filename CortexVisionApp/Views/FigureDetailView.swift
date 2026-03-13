@@ -104,9 +104,9 @@ struct FigureDetailView: View {
                         containerSize = geo.size
                         fittedImageSize = fitted
                     }
-                    .onChange(of: geo.size) { newSize in
-                        containerSize = newSize
-                        fittedImageSize = fitSize(imageAspect: imageAspect, into: newSize)
+                    .onChange(of: geo.size) {
+                        containerSize = geo.size
+                        fittedImageSize = fitSize(imageAspect: imageAspect, into: geo.size)
                     }
                     .overlay(
                         ScrollWheelCaptureView { delta in
@@ -237,7 +237,7 @@ private class ScrollWheelNSView: NSView {
         super.viewDidMoveToWindow()
         if window != nil && scrollMonitor == nil {
             scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-                guard let self = self, let window = self.window else { return event }
+                guard let self = self, self.window != nil else { return event }
                 let locationInWindow = event.locationInWindow
                 let locationInView = self.convert(locationInWindow, from: nil)
                 if self.bounds.contains(locationInView) {

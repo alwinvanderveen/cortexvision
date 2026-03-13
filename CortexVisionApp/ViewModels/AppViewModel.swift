@@ -314,7 +314,7 @@ public final class AppViewModel: ObservableObject {
 
     /// Toggle selection state of a detected figure by index.
     func toggleFigureSelection(at index: Int) {
-        guard var result = figureResult, index < result.figures.count else { return }
+        guard let result = figureResult, index < result.figures.count else { return }
         var figures = result.figures
         figures[index].isSelected.toggle()
         figureResult = FigureDetectionResult(figures: figures)

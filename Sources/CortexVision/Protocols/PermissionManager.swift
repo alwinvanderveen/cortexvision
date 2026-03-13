@@ -11,7 +11,7 @@ public enum PermissionStatus: Equatable {
 /// Abstracts OS permission management.
 /// Current implementation: LocalPermissionManager (direct system checks).
 /// Future App Store implementation: SandboxPermissionManager (sandbox-aware).
-public protocol PermissionManager {
+public protocol PermissionManager: Sendable {
     /// Checks the current screen recording permission status.
     func screenRecordingStatus() -> PermissionStatus
 

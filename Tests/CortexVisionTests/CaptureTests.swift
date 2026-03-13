@@ -14,8 +14,8 @@ let isCI: Bool = ProcessInfo.processInfo.environment["CI"] != nil
 /// only reflects the permission of the specific bundle, not the test runner.
 let isScreenRecordingAvailable: Bool = {
     let semaphore = DispatchSemaphore(value: 0)
-    var available = false
-    Task.detached {
+    nonisolated(unsafe) var available = false
+    Task.detached { @Sendable in
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
             available = !content.displays.isEmpty
@@ -95,6 +95,7 @@ struct CaptureUnitTests {
 
     @Test("RegionSelector can be instantiated",
           .tags(.capture))
+    @MainActor
     func regionSelectorExists() {
         // Functional: Region selection mechanism is available
         // Technical: RegionSelector can be created without parameters

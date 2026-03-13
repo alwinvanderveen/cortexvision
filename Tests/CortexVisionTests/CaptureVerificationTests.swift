@@ -1510,6 +1510,7 @@ private func renderViewToImage(_ view: NSView, size: CGSize, scale: CGFloat = 2.
     return context.makeImage()!
 }
 
+@MainActor
 private final class FigureReferenceWindow {
     let window: NSWindow
 
