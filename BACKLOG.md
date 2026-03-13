@@ -288,7 +288,7 @@ Als gebruiker wil ik dat na een capture automatisch alle tekst wordt herkend en 
 
 ## UC-5: Figuur Detectie & Extractie
 
-**Status:** `APPROVED`
+**Status:** `DONE`
 
 ### Beschrijving
 Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen, foto's) automatisch worden herkend — ongeacht hun vorm — en als losse bestanden beschikbaar worden gesteld, zodat ik visuele elementen apart kan hergebruiken.
@@ -425,6 +425,85 @@ Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen,
 | TC-5.9a | Figuur-overlays verschijnen als .figure kind | AnalysisOverlay items hebben kind == .figure |
 | TC-5.9b | Figuur-overlays en tekst-overlays bestaan naast elkaar | Beide typen aanwezig in overlay array |
 | TC-5.9c | figureCount in CaptureState.analyzed is correct | Aantal komt overeen met gedetecteerde figuren |
+
+---
+
+## UC-5a: Interactieve Figuur & Tekst Overlay Correctie
+
+**Status:** `APPROVED`
+
+### Beschrijving
+Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overlays) handmatig kunnen verplaatsen, vergroten/verkleinen en verwijderen in de preview, zodat ik de detectie kan corrigeren wanneer deze niet perfect is. Daarnaast wil ik nieuwe figuurvlakken handmatig kunnen toevoegen. Tekst-overlays worden gegroepeerd tot logische blokken in plaats van per regel getoond.
+
+### Actors
+- Eindgebruiker
+
+### Precondities
+- Er is een capture met analyse-resultaten beschikbaar (UC-4 + UC-5)
+- Overlays zijn zichtbaar in de preview
+
+### Flow
+1. Na figuurdetectie (UC-5) en OCR (UC-4) worden overlays getoond op de preview
+2. Tekst-overlays worden gegroepeerd: nabijgelegen OCR-regels worden samengevoegd tot logische blokken
+3. Gebruiker kan een overlay selecteren door erop te klikken
+4. Geselecteerde overlay toont resize-handgrepen (hoeken + zijden)
+5. Gebruiker kan de overlay slepen om te verplaatsen
+6. Gebruiker kan handgrepen slepen om te resizen
+7. Gebruiker kan een overlay verwijderen (Delete-toets of context menu)
+8. Gebruiker kan een nieuw figuurvlak tekenen (klik + sleep op lege plek)
+9. Wijzigingen worden direct gereflecteerd in de geëxtraheerde figuren
+10. Bij re-export worden de gecorrigeerde bounds gebruikt
+
+### GUI-aanpassingen
+- Preview paneel wordt groter/flexibeler zodat vlakken goed zichtbaar en positioneerbaar zijn
+- Splitview met instelbare verhouding (preview vs results)
+- Zoom/pan op de preview voor nauwkeurige positionering
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| Tekst-overlay grouping | `PRODUCTIE` | Merge nabijgelegen OCR-blokken tot logische tekstblokken via proximity-threshold |
+| Tekst-overlay interactie | `PRODUCTIE` | Zelfde selectie/drag/resize als figuur-overlays |
+| Draggable overlay selectie | `PRODUCTIE` | Klik-selectie met visuele feedback |
+| Resize handgrepen | `PRODUCTIE` | 8-punt resize (4 hoeken + 4 zijden) |
+| Verplaatsing (drag) | `PRODUCTIE` | Overlay meebeweegt met muis |
+| Verwijderen overlay | `PRODUCTIE` | Delete-toets + context menu |
+| Nieuw vlak tekenen | `PRODUCTIE` | Klik+sleep op lege plek, wordt nieuwe DetectedFigure |
+| Live figuur re-extractie | `PRODUCTIE` | Na verplaatsen/resizen wordt CGImage opnieuw uitgesneden |
+| Flexibele splitview | `PRODUCTIE` | Instelbare verhouding preview/results |
+| Preview zoom/pan | `PRODUCTIE` | Scroll-zoom + space-drag voor panning |
+
+### Acceptatiecriteria
+- [ ] Tekst-overlays zijn gegroepeerd tot logische blokken (niet per regel)
+- [ ] Klik op overlay selecteert deze (visuele highlight)
+- [ ] Geselecteerde overlay toont resize-handgrepen
+- [ ] Overlay kan worden versleept naar andere positie
+- [ ] Overlay kan worden vergroot/verkleind via handgrepen
+- [ ] Delete-toets verwijdert geselecteerde overlay
+- [ ] Klik+sleep op lege plek tekent nieuw figuurvlak
+- [ ] Na verplaatsen/resizen wordt de figuur opnieuw uitgesneden
+- [ ] Splitview verhouding is aanpasbaar door gebruiker
+- [ ] Preview ondersteunt zoom en pan voor nauwkeurig werk
+
+### Testcases — Unit (draaien overal, ook CI)
+
+**Tekst-overlay grouping**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5a.8 | 10 OCR-regels met kleine gaps | Gegroepeerd tot 1-3 tekstblokken, niet 10 overlays |
+| TC-5a.9 | Twee gescheiden tekstkolommen | Twee aparte tekst-overlays |
+| TC-5a.10 | Tekst-overlay verplaatsen | Bounds verschuift, tekst wordt hergeassocieerd |
+
+**Overlay interactie**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5a.1 | Selecteer overlay via klik | isSelected state wordt true |
+| TC-5a.2 | Verplaats overlay 50px rechts | bounds.x verschuift correct in genormaliseerde coords |
+| TC-5a.3 | Resize overlay via hoekhandgreep | bounds.width en height passen aan |
+| TC-5a.4 | Verwijder geselecteerde overlay | overlays array verliest 1 element |
+| TC-5a.5 | Teken nieuw vlak | overlays array krijgt 1 nieuw element |
+| TC-5a.6 | Verplaats overlay buiten beeldrand | Bounds worden geclampt binnen 0..1 |
+| TC-5a.7 | Re-extractie na resize | Nieuwe CGImage heeft aangepaste dimensies |
 
 ---
 
@@ -641,19 +720,22 @@ UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                                        │
                                               ┌────────┼────────┐
                                               ▼        ▼        ▼
-                                        UC-4a [DRAFT] UC-4b [DRAFT] UC-5 [DRAFT]
-                                              │        │        │
-                                              └────────┼────────┘
-                                                       ▼
+                                        UC-4a [DRAFT] UC-4b [DRAFT] UC-5 [DONE]
+                                                                       │
+                                                                       ▼
+                                                              UC-5a [APPROVED] ◄── NEXT
+                                                                       │
+                                              ┌────────────────────────┘
+                                              ▼
                                  UC-6 [DRAFT] ──► UC-7 [DRAFT]
                                                        │
                                                        ▼
                                               UC-8 [BACKLOG] (App Store)
 ```
 
-UC-4a (formatted output) en UC-4b (blokselectie) zijn afhankelijk van UC-4.
-UC-5 kan parallel met UC-4a/UC-4b na UC-4.
-UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-4a+UC-5.
+UC-5a (interactieve overlay correctie) is de eerstvolgende prioriteit.
+UC-4a en UC-4b zijn afhankelijk van UC-4, kunnen parallel met UC-5a.
+UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-5a.
 
 ---
 
