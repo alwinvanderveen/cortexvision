@@ -172,6 +172,34 @@ Bij het debuggen van problemen geldt: **gebruik altijd debug-output om het probl
 > ❌ Fout: "De variance is te laag, waarschijnlijk omdat de figuur subtiele kleuren heeft. Laten we de threshold verlagen."
 > ✅ Goed: Debug toevoegen aan colorVariance → zien dat brightness-only variance wordt berekend → concluderen dat RGB-kanalen nodig zijn → fixen.
 
+## HARDE GATE 10: CI moet groen zijn vóór push-bevestiging
+
+**DEZE REGEL IS NIET OPTIONEEL EN MAG NIET WORDEN OVERGESLAGEN.**
+
+Een push naar GitHub is pas afgerond wanneer de CI-pipeline succesvol heeft gedraaid.
+
+### Regels
+- **Na elke `git push`:** controleer de CI-status via `gh run list --limit 1` of `gh run watch`.
+- **WACHT** tot de CI-run is afgerond (passed/failed).
+- **Bij CI-failure:** meld de fout aan de gebruiker, analyseer de oorzaak, fix het probleem, en push opnieuw. De push is NIET klaar zolang CI rood is.
+- **Bij CI-success:** meld aan de gebruiker dat de push compleet is (inclusief CI-status).
+- **Geen "push en vergeet".** Een push zonder CI-verificatie is een onafgeronde actie.
+
+### Voorbeeld
+> ```
+> $ git push
+> $ gh run watch
+> ✓ CI passed in 52s — push is compleet.
+> ```
+>
+> OF:
+>
+> ```
+> $ git push
+> $ gh run watch
+> ✗ CI failed: test "Tall narrow figure" — analyseer en fix.
+> ```
+
 ## Overige regels
 
 - Code in het Engels, UI labels in het Engels, comments in het Engels
