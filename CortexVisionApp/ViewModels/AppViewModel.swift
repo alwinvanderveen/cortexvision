@@ -10,6 +10,8 @@ public final class AppViewModel: ObservableObject {
     @Published var captureState: CaptureState = .idle
     @Published var capturedImage: CGImage?
     @Published var analysisOverlays: [AnalysisOverlay] = []
+    @Published var overlayItems: [OverlayItem] = []
+    @Published var selectedOverlayId: UUID?
     @Published var ocrResult: OCRResult?
     @Published var figureResult: FigureDetectionResult?
     @Published var showWindowPicker = false
@@ -303,6 +305,7 @@ public final class AppViewModel: ObservableObject {
             }
 
             analysisOverlays = overlays
+            buildOverlayItems()
             captureState = .analyzed(wordCount: ocrRes.wordCount, figureCount: figureRes.figures.count)
 
             if debug { debugLog("[AppViewModel] === ANALYSIS END ===") }
@@ -318,5 +321,132 @@ public final class AppViewModel: ObservableObject {
         var figures = result.figures
         figures[index].isSelected.toggle()
         figureResult = FigureDetectionResult(figures: figures)
+    }
+
+    // MARK: - Overlay Interaction (UC-5a)
+
+    private let textBlockGrouper = TextBlockGrouper()
+
+    /// Builds interactive overlay items from OCR + figure detection results.
+    func buildOverlayItems() {
+        guard let ocrRes = ocrResult, let figureRes = figureResult else {
+            overlayItems = []
+            return
+        }
+
+        // Group text blocks into logical regions
+        let textInputs = ocrRes.textBlocks.map { (text: $0.text, bounds: $0.bounds) }
+        let textOverlays = textBlockGrouper.group(textInputs)
+
+        // Create figure overlay items (with SwiftUI Y-flip)
+        let figureOverlays = figureRes.figures.enumerated().map { index, figure in
+            OverlayItem(
+                bounds: CGRect(
+                    x: figure.bounds.origin.x,
+                    y: 1.0 - figure.bounds.origin.y - figure.bounds.height,
+                    width: figure.bounds.width,
+                    height: figure.bounds.height
+                ),
+                kind: .figure,
+                label: figure.label,
+                sourceFigureIndex: index
+            )
+        }
+
+        overlayItems = textOverlays + figureOverlays
+        selectedOverlayId = nil
+    }
+
+    /// Select an overlay by ID. Deselects the previously selected overlay.
+    func selectOverlay(id: UUID?) {
+        // Deselect previous
+        if let prevId = selectedOverlayId,
+           let prevIdx = overlayItems.firstIndex(where: { $0.id == prevId }) {
+            overlayItems[prevIdx].isSelected = false
+        }
+        // Select new
+        selectedOverlayId = id
+        if let newId = id,
+           let newIdx = overlayItems.firstIndex(where: { $0.id == newId }) {
+            overlayItems[newIdx].isSelected = true
+        }
+    }
+
+    /// Move an overlay by a normalized delta.
+    func moveOverlay(id: UUID, dx: CGFloat, dy: CGFloat) {
+        guard let idx = overlayItems.firstIndex(where: { $0.id == id }) else { return }
+        overlayItems[idx].move(dx: dx, dy: dy)
+    }
+
+    /// Resize an overlay to new bounds.
+    func resizeOverlay(id: UUID, to newBounds: CGRect) {
+        guard let idx = overlayItems.firstIndex(where: { $0.id == id }) else { return }
+        overlayItems[idx].resize(to: newBounds)
+    }
+
+    /// Toggle exclusion state of an overlay (include/exclude from export).
+    func toggleOverlayExclusion(id: UUID) {
+        guard let idx = overlayItems.firstIndex(where: { $0.id == id }) else { return }
+        overlayItems[idx].isExcluded.toggle()
+    }
+
+    /// Delete the selected overlay.
+    func deleteSelectedOverlay() {
+        guard let id = selectedOverlayId else { return }
+        overlayItems.removeAll { $0.id == id }
+        selectedOverlayId = nil
+    }
+
+    /// Add a new manually drawn figure overlay.
+    func addManualFigureOverlay(bounds: CGRect) {
+        let label = "Figure \(overlayItems.filter { $0.kind == .figure }.count + 1)"
+        let item = OverlayItem(
+            bounds: bounds,
+            kind: .figure,
+            label: label,
+            isManual: true
+        )
+        overlayItems.append(item)
+        selectOverlay(id: item.id)
+    }
+
+    /// Re-extracts the figure CGImage for an overlay after it was moved/resized.
+    func reExtractFigure(for overlayId: UUID) {
+        guard let image = capturedImage,
+              let idx = overlayItems.firstIndex(where: { $0.id == overlayId }),
+              overlayItems[idx].kind == .figure else { return }
+
+        let item = overlayItems[idx]
+        // Convert SwiftUI bounds back to pixel rect
+        let pixelRect = CGRect(
+            x: item.bounds.origin.x * CGFloat(image.width),
+            y: item.bounds.origin.y * CGFloat(image.height),
+            width: item.bounds.width * CGFloat(image.width),
+            height: item.bounds.height * CGFloat(image.height)
+        )
+        let clamped = pixelRect.intersection(
+            CGRect(x: 0, y: 0, width: image.width, height: image.height)
+        )
+        guard !clamped.isEmpty, let cropped = image.cropping(to: clamped) else { return }
+
+        // Update the figure result if this was an auto-detected figure
+        if let figIdx = item.sourceFigureIndex, let result = figureResult, figIdx < result.figures.count {
+            var figures = result.figures
+            // Convert SwiftUI bounds back to Vision bounds for the figure
+            let visionBounds = CGRect(
+                x: item.bounds.origin.x,
+                y: 1.0 - item.bounds.origin.y - item.bounds.height,
+                width: item.bounds.width,
+                height: item.bounds.height
+            )
+            figures[figIdx] = DetectedFigure(
+                id: figures[figIdx].id,
+                bounds: visionBounds,
+                label: figures[figIdx].label,
+                extractedImage: cropped,
+                isSelected: figures[figIdx].isSelected
+            )
+            figureResult = FigureDetectionResult(figures: figures)
+        }
     }
 }

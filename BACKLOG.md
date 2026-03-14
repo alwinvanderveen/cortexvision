@@ -430,7 +430,7 @@ Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen,
 
 ## UC-5a: Interactieve Figuur & Tekst Overlay Correctie
 
-**Status:** `APPROVED`
+**Status:** `IN PROGRESS`
 
 ### Beschrijving
 Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overlays) handmatig kunnen verplaatsen, vergroten/verkleinen en verwijderen in de preview, zodat ik de detectie kan corrigeren wanneer deze niet perfect is. Daarnaast wil ik nieuwe figuurvlakken handmatig kunnen toevoegen. Tekst-overlays worden gegroepeerd tot logische blokken in plaats van per regel getoond.
@@ -450,40 +450,47 @@ Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overl
 5. Gebruiker kan de overlay slepen om te verplaatsen
 6. Gebruiker kan handgrepen slepen om te resizen
 7. Gebruiker kan een overlay verwijderen (Delete-toets of context menu)
-8. Gebruiker kan een nieuw figuurvlak tekenen (klik + sleep op lege plek)
-9. Wijzigingen worden direct gereflecteerd in de geëxtraheerde figuren
-10. Bij re-export worden de gecorrigeerde bounds gebruikt
+8. Gebruiker kan individuele tekstblokken uitsluiten via toggle (niet meenemen in export)
+9. Gebruiker kan een nieuw figuurvlak tekenen (klik + sleep op lege plek)
+10. Wijzigingen worden direct gereflecteerd in de geëxtraheerde figuren
+11. Bij re-export worden de gecorrigeerde bounds en uitsluitingen gebruikt
 
 ### GUI-aanpassingen
-- Preview paneel wordt groter/flexibeler zodat vlakken goed zichtbaar en positioneerbaar zijn
-- Splitview met instelbare verhouding (preview vs results)
-- Zoom/pan op de preview voor nauwkeurige positionering
+- Preview paneel is het primaire werkgebied en krijgt het meeste schermruimte
+- Splitview met instelbare verhouding (preview vs results), default ~65/35 ten gunste van preview
+- Results panel compacter: toont samenvatting, figuur-lijst, en bewerkingsopties
+- Zoom/pan op de preview (scroll-zoom + drag-to-pan) voor nauwkeurige positionering van overlays
+- Bij het inzoomen moeten overlays meeschalen en positioneerbaar blijven
 
 ### Classificatie per onderdeel
 | Onderdeel | Classificatie | Toelichting |
 |-----------|--------------|-------------|
 | Tekst-overlay grouping | `PRODUCTIE` | Merge nabijgelegen OCR-blokken tot logische tekstblokken via proximity-threshold |
 | Tekst-overlay interactie | `PRODUCTIE` | Zelfde selectie/drag/resize als figuur-overlays |
+| Tekstblok uitsluiting | `PRODUCTIE` | Toggle per tekstblok om uit te sluiten van export. Visueel doorgestreept/gedimd |
 | Draggable overlay selectie | `PRODUCTIE` | Klik-selectie met visuele feedback |
 | Resize handgrepen | `PRODUCTIE` | 8-punt resize (4 hoeken + 4 zijden) |
 | Verplaatsing (drag) | `PRODUCTIE` | Overlay meebeweegt met muis |
 | Verwijderen overlay | `PRODUCTIE` | Delete-toets + context menu |
 | Nieuw vlak tekenen | `PRODUCTIE` | Klik+sleep op lege plek, wordt nieuwe DetectedFigure |
 | Live figuur re-extractie | `PRODUCTIE` | Na verplaatsen/resizen wordt CGImage opnieuw uitgesneden |
-| Flexibele splitview | `PRODUCTIE` | Instelbare verhouding preview/results |
-| Preview zoom/pan | `PRODUCTIE` | Scroll-zoom + space-drag voor panning |
+| Splitview herverdeling | `PRODUCTIE` | Preview ~65%, results ~35%. Preview is primair werkgebied |
+| Preview zoom/pan | `PRODUCTIE` | Scroll-zoom + drag-to-pan, overlays schalen mee |
 
 ### Acceptatiecriteria
-- [ ] Tekst-overlays zijn gegroepeerd tot logische blokken (niet per regel)
-- [ ] Klik op overlay selecteert deze (visuele highlight)
-- [ ] Geselecteerde overlay toont resize-handgrepen
-- [ ] Overlay kan worden versleept naar andere positie
-- [ ] Overlay kan worden vergroot/verkleind via handgrepen
-- [ ] Delete-toets verwijdert geselecteerde overlay
-- [ ] Klik+sleep op lege plek tekent nieuw figuurvlak
+- [x] Tekst-overlays zijn gegroepeerd tot logische blokken (niet per regel)
+- [x] Klik op overlay selecteert deze (visuele highlight)
+- [x] Geselecteerde overlay toont resize-handgrepen
+- [x] Overlay kan worden versleept naar andere positie
+- [x] Overlay kan worden vergroot/verkleind via handgrepen
+- [x] Delete-toets verwijdert geselecteerde overlay
+- [x] Klik+sleep op lege plek tekent nieuw figuurvlak
 - [ ] Na verplaatsen/resizen wordt de figuur opnieuw uitgesneden
+- [ ] Individuele tekstblokken kunnen worden uitgesloten via toggle
+- [ ] Preview paneel is primair werkgebied (~65% van de breedte)
 - [ ] Splitview verhouding is aanpasbaar door gebruiker
 - [ ] Preview ondersteunt zoom en pan voor nauwkeurig werk
+- [ ] Bij zoom schalen overlays mee en blijven positioneerbaar
 
 ### Testcases — Unit (draaien overal, ook CI)
 
@@ -809,20 +816,28 @@ Google's open-source [LangExtract](https://github.com/google/langextract) librar
 
 ## Bevindingen
 
-### BUG-1: Figuur links afgesneden in UI (DenHaagDoet)
+### BUG-1: Figuur links afgesneden in UI + overlay-tekst trimming
 
-**Status:** `OPEN`
+**Status:** `FIXED`
 **Gevonden:** 2026-03-12
-**Component:** UI / ResultsPanel
+**Opgelost:** 2026-03-14
+**Component:** FigureDetector / OverlayTextAnalyzer
 
 **Beschrijving:**
-Bij de DenHaagDoet hero banner wordt de linkerkant van de geëxtraheerde figuur afgesneden in de app UI. De detectie-pipeline levert correcte bounds (x=0.000, width=0.997, extracted 1920×340px, left whitespace 0px), maar de weergave in het results panel snijdt links content weg.
+Meerdere gerelateerde problemen bij figuurdetectie op nieuwspagina's:
+1. Figuur links afgesneden in UI (DenHaagDoet hero banner)
+2. Foto gesplitst in meerdere figuren door subject promotion (RC-1)
+3. Foto afgeknipt bij overlay-tekst op de foto (RC-2)
+4. Headline tekst op fotorand veroorzaakt onterechte trimming
 
-**Root cause:** Vermoedelijk in de UI-laag (ResultsPanel / FigureDetailView), niet in FigureDetector.
+**Oplossing:**
+- `OverlayTextAnalyzer` — lokale patch-analyse per tekstblok met 3 signalen (continuïteit, coherentie, randproximiteit)
+- `mergeHorizontallyAdjacent()` — merget figuren in dezelfde rij
+- Post-crop validatie in PASS4 — voorkomt autoCrop cascade
+- Classificaties: overlay, edgeOverlay, pageText, uncertain
+- Conservatieve trim-policy: alleen pageText wordt getrimd
 
-**Reproduce:**
-1. `make run`
-2. Capture de DenHaagDoet testafbeelding
-3. Bekijk de geëxtraheerde figuur in het results panel → linkerkant is afgesneden
-
-**Verwacht:** Volledige figuur zichtbaar zonder afsnijding
+**Resultaten:**
+- Bovenfoto bounds height: 0.209 → 0.263
+- Onderfoto bounds height: 0.210 → 0.269
+- 214 tests, 214 passed, 87.8% coverage

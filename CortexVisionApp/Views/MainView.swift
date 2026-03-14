@@ -12,19 +12,34 @@ struct MainView: View {
                     capturedImage: viewModel.capturedImage,
                     captureState: viewModel.captureState,
                     overlays: viewModel.analysisOverlays,
-                    imageSize: viewModel.imageSize
+                    interactiveItems: viewModel.overlayItems,
+                    selectedOverlayId: viewModel.selectedOverlayId,
+                    imageSize: viewModel.imageSize,
+                    onSelectOverlay: { id in viewModel.selectOverlay(id: id) },
+                    onMoveOverlay: { id, dx, dy in
+                        viewModel.moveOverlay(id: id, dx: dx, dy: dy)
+                        viewModel.reExtractFigure(for: id)
+                    },
+                    onResizeOverlay: { id, bounds in
+                        viewModel.resizeOverlay(id: id, to: bounds)
+                        viewModel.reExtractFigure(for: id)
+                    },
+                    onDeleteOverlay: { viewModel.deleteSelectedOverlay() },
+                    onDrawNewOverlay: { bounds in viewModel.addManualFigureOverlay(bounds: bounds) },
+                    onToggleExclusion: { id in viewModel.toggleOverlayExclusion(id: id) }
                 )
-                .frame(minWidth: 400)
+                .frame(minWidth: 500, idealWidth: 700)
 
                 ResultsPanel(
                     captureState: viewModel.captureState,
                     ocrResult: viewModel.ocrResult,
                     figureResult: viewModel.figureResult,
+                    excludedTextOverlayIds: Set(viewModel.overlayItems.filter { $0.kind == .text && $0.isExcluded }.map(\.id)),
                     onToggleFigure: { index in
                         viewModel.toggleFigureSelection(at: index)
                     }
                 )
-                    .frame(minWidth: 250, idealWidth: 350)
+                    .frame(minWidth: 220, idealWidth: 300)
             }
 
             // Status bar

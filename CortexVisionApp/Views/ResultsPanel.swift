@@ -5,6 +5,7 @@ struct ResultsPanel: View {
     let captureState: CaptureState
     let ocrResult: OCRResult?
     let figureResult: FigureDetectionResult?
+    var excludedTextOverlayIds: Set<UUID> = []
     var onToggleFigure: ((Int) -> Void)?
 
     @State private var selectedFigureForZoom: DetectedFigure?
