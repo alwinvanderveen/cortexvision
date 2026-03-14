@@ -1533,6 +1533,100 @@ struct RealImageVerificationTests {
                 "Left whitespace should be <\(maxWhitePct)%, got \(String(format: "%.1f", leftPct))%")
     }
 
+    /// Loads Image/testMultipleImageNews2.png — a news page with two photos:
+    ///   1. Top: military photo (people + aircraft) — should be ONE figure, not two
+    ///   2. Bottom: video thumbnail (dog on runway) with text overlay — should not be clipped at text
+    @Test("Real cutout: news page with multiple photos and text overlay",
+          .tags(.figures))
+    func realCutoutMultipleNewsPhotos() async throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let imagePath = projectRoot
+            .appendingPathComponent("Image")
+            .appendingPathComponent("testMultipleImageNews2.png")
+
+        guard let nsImage = NSImage(contentsOf: imagePath) else {
+            Issue.record("Could not load test image at \(imagePath.path)")
+            return
+        }
+        guard let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            Issue.record("Could not convert NSImage to CGImage")
+            return
+        }
+
+        print("  Source image: \(cgImage.width)×\(cgImage.height)")
+
+        let detector = FigureDetector()
+
+        // Get text bounds via OCR
+        let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+        let ocrRequest = VNRecognizeTextRequest()
+        ocrRequest.recognitionLevel = .accurate
+        try handler.perform([ocrRequest])
+        let textBounds = (ocrRequest.results ?? []).map { $0.boundingBox }
+        print("  OCR found \(textBounds.count) text blocks")
+
+        // Run the full detection pipeline
+        let result = try await detector.detectFigures(in: cgImage, textBounds: textBounds)
+
+        print("  Detected \(result.figures.count) figure(s):")
+        for (i, f) in result.figures.enumerated() {
+            if let img = f.extractedImage {
+                let aspect = CGFloat(img.width) / CGFloat(img.height)
+                print("  Figure \(i+1): \(img.width)×\(img.height) aspect=\(String(format: "%.2f", aspect)):1")
+            }
+            print("    Bounds: x=\(String(format: "%.3f", f.bounds.minX)) y=\(String(format: "%.3f", f.bounds.minY)) w=\(String(format: "%.3f", f.bounds.width)) h=\(String(format: "%.3f", f.bounds.height))")
+        }
+
+        // --- Assertions ---
+
+        // Should detect exactly 2 figures: top photo + bottom photo
+        #expect(result.figures.count == 2,
+                "Expected 2 figures (top photo + bottom video), got \(result.figures.count)")
+
+        // Top photo: should be the full military photo, not split into person + scene
+        // The top photo is in the upper portion of the image (roughly y > 0.6 in Vision coords)
+        let topFigures = result.figures.filter { $0.bounds.maxY > 0.6 }
+        #expect(topFigures.count == 1,
+                "Top photo should be 1 figure, not \(topFigures.count) (subject should not be promoted separately)")
+
+        if let topFigure = topFigures.first, let topExtracted = topFigure.extractedImage {
+            print("  Top figure: \(topExtracted.width)×\(topExtracted.height) bounds height: \(String(format: "%.3f", topFigure.bounds.height))")
+            // The top photo extends behind the headline text (white text on photo edge).
+            // The OverlayTextAnalyzer should classify the headline as edgeOverlay and
+            // prevent trimming. The figure should include the headline area.
+            #expect(topFigure.bounds.height > 0.24,
+                    "Top photo should include headline area (height > 0.24), got \(String(format: "%.3f", topFigure.bounds.height))")
+            #expect(topExtracted.width > 500,
+                    "Top photo width should be >500px after merge, got \(topExtracted.width)")
+        }
+
+        // Bottom photo: video thumbnail with text overlay
+        // Should include the full photo including area under the text
+        let bottomFigures = result.figures.filter { $0.bounds.maxY <= 0.6 }
+        #expect(bottomFigures.count == 1,
+                "Bottom photo should be 1 figure, got \(bottomFigures.count)")
+
+        if let bottomFigure = bottomFigures.first, let extracted = bottomFigure.extractedImage {
+            // The video thumbnail should not be clipped short — it should capture the runway scene
+            let aspect = CGFloat(extracted.width) / CGFloat(extracted.height)
+            print("  Bottom figure aspect: \(String(format: "%.2f", aspect)):1")
+            print("  Bottom figure bounds height: \(String(format: "%.3f", bottomFigure.bounds.height))")
+
+            // The photo is roughly landscape, expect reasonable height
+            #expect(extracted.height > 100,
+                    "Bottom photo height should be substantial, got \(extracted.height)px")
+
+            // RC-2: The figure should NOT be trimmed at the text overlay.
+            // The full photo (including area under "Loslopende hond..." text) should be captured.
+            // Before fix: bounds height was ~0.210 (trimmed). After fix: should be ~0.270+ (full photo).
+            #expect(bottomFigure.bounds.height > 0.24,
+                    "Bottom photo should include area under text overlay (height > 0.24), got \(String(format: "%.3f", bottomFigure.bounds.height))")
+        }
+    }
+
     // MARK: - Helpers
 
     private enum ScanDirection { case top, bottom }
@@ -1651,6 +1745,35 @@ struct RealImageVerificationTests {
     }
 
     /// Count consecutive columns with average brightness >= threshold, scanning from left or right.
+    /// Converts a CGImage to a specific color space by redrawing it into a new bitmap context.
+    private func convertToColorSpace(_ image: CGImage, colorSpace: CGColorSpace) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    /// Scales a CGImage by the given factor (e.g. 2.0 = double dimensions).
+    private func scaleImage(_ image: CGImage, factor: CGFloat) -> CGImage? {
+        let newWidth = Int(CGFloat(image.width) * factor)
+        let newHeight = Int(CGFloat(image.height) * factor)
+        guard let context = CGContext(
+            data: nil, width: newWidth, height: newHeight,
+            bitsPerComponent: 8, bytesPerRow: newWidth * 4,
+            space: image.colorSpace ?? CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        return context.makeImage()
+    }
+
     private func countWhiteCols(from direction: ColDirection, in image: CGImage, threshold: Double) -> Int {
         let width = image.width
         let height = image.height
@@ -1684,5 +1807,282 @@ struct RealImageVerificationTests {
             }
         }
         return count
+    }
+}
+
+// MARK: - Color Space & Scale Consistency Tests
+
+@Suite("Figure Detection — Color Space & Scale Consistency")
+struct ColorSpaceScaleConsistencyTests {
+
+    private func loadDenHaagDoetImage() -> CGImage? {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let imagePath = projectRoot
+            .appendingPathComponent("Image")
+            .appendingPathComponent("testEdgesDenHaagDoet.png")
+        guard let nsImage = NSImage(contentsOf: imagePath),
+              let cgImage = nsImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+            return nil
+        }
+        return cgImage
+    }
+
+    private func runDetection(on image: CGImage) async throws -> (figure: DetectedFigure, bounds: CGRect, aspect: CGFloat, leftWhitePct: Double) {
+        let detector = FigureDetector()
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        let ocrRequest = VNRecognizeTextRequest()
+        ocrRequest.recognitionLevel = .accurate
+        try handler.perform([ocrRequest])
+        let textBounds = (ocrRequest.results ?? []).map { $0.boundingBox }
+
+        let result = try await detector.detectFigures(in: image, textBounds: textBounds)
+        guard let hero = result.figures.first else {
+            throw DetectionError.noFigureDetected
+        }
+
+        guard let extracted = hero.extractedImage else {
+            throw DetectionError.noExtractedImage
+        }
+
+        let aspect = CGFloat(extracted.width) / CGFloat(extracted.height)
+        let leftWhitePct = leftWhitePercentage(of: extracted)
+
+        return (hero, hero.bounds, aspect, leftWhitePct)
+    }
+
+    private func leftWhitePercentage(of image: CGImage) -> Double {
+        let width = image.width
+        let height = image.height
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return 100.0 }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let data = context.data else { return 100.0 }
+        let ptr = data.bindMemory(to: UInt8.self, capacity: width * height * 4)
+
+        var count = 0
+        for col in 0..<width {
+            var colSum = 0.0
+            for y in 0..<height {
+                let offset = (y * width + col) * 4
+                colSum += Double(ptr[offset]) + Double(ptr[offset + 1]) + Double(ptr[offset + 2])
+            }
+            let avg = colSum / (3.0 * Double(height))
+            if avg >= 248.0 {
+                count += 1
+            } else {
+                break
+            }
+        }
+        return Double(count) / Double(width) * 100.0
+    }
+
+    private func convertToColorSpace(_ image: CGImage, colorSpace: CGColorSpace) -> CGImage? {
+        let width = image.width
+        let height = image.height
+        guard let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage()
+    }
+
+    private func scaleImage(_ image: CGImage, factor: CGFloat) -> CGImage? {
+        let newWidth = Int(CGFloat(image.width) * factor)
+        let newHeight = Int(CGFloat(image.height) * factor)
+        guard let context = CGContext(
+            data: nil, width: newWidth, height: newHeight,
+            bitsPerComponent: 8, bytesPerRow: newWidth * 4,
+            space: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)!,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: newWidth, height: newHeight))
+        return context.makeImage()
+    }
+
+    enum DetectionError: Error {
+        case noFigureDetected
+        case noExtractedImage
+    }
+
+    // MARK: - Color Space Tests
+
+    @Test("Detection consistency: sRGB vs Display P3 color space",
+          .tags(.figures))
+    func colorSpaceSRGBvsP3() async throws {
+        guard let original = loadDenHaagDoetImage() else {
+            Issue.record("Could not load DenHaagDoet test image")
+            return
+        }
+
+        let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        let p3Space = CGColorSpace(name: CGColorSpace.displayP3)!
+
+        guard let srgbImage = convertToColorSpace(original, colorSpace: srgbSpace) else {
+            Issue.record("Failed to convert to sRGB")
+            return
+        }
+        guard let p3Image = convertToColorSpace(original, colorSpace: p3Space) else {
+            Issue.record("Failed to convert to Display P3")
+            return
+        }
+
+        let srgbResult = try await runDetection(on: srgbImage)
+        let p3Result = try await runDetection(on: p3Image)
+
+        print("  sRGB: bounds=(\(fmt(srgbResult.bounds))) aspect=\(String(format: "%.1f", srgbResult.aspect)):1 leftWhite=\(String(format: "%.1f", srgbResult.leftWhitePct))%")
+        print("  P3:   bounds=(\(fmt(p3Result.bounds))) aspect=\(String(format: "%.1f", p3Result.aspect)):1 leftWhite=\(String(format: "%.1f", p3Result.leftWhitePct))%")
+
+        // Both should detect exactly 1 figure
+        // Bounds should be within 5% tolerance of each other
+        let boundsTolerance = 0.05
+        #expect(abs(srgbResult.bounds.minX - p3Result.bounds.minX) < boundsTolerance,
+                "Bounds minX diverges: sRGB=\(srgbResult.bounds.minX) P3=\(p3Result.bounds.minX)")
+        #expect(abs(srgbResult.bounds.width - p3Result.bounds.width) < boundsTolerance,
+                "Bounds width diverges: sRGB=\(srgbResult.bounds.width) P3=\(p3Result.bounds.width)")
+        #expect(abs(srgbResult.bounds.height - p3Result.bounds.height) < boundsTolerance,
+                "Bounds height diverges: sRGB=\(srgbResult.bounds.height) P3=\(p3Result.bounds.height)")
+
+        // Both should have <2% left whitespace
+        #expect(srgbResult.leftWhitePct < 2.0,
+                "sRGB: left whitespace \(String(format: "%.1f", srgbResult.leftWhitePct))% should be <2%")
+        #expect(p3Result.leftWhitePct < 2.0,
+                "P3: left whitespace \(String(format: "%.1f", p3Result.leftWhitePct))% should be <2%")
+
+        // Aspect ratios should be within 10% of each other
+        let aspectDiff = abs(srgbResult.aspect - p3Result.aspect) / srgbResult.aspect
+        #expect(aspectDiff < 0.10,
+                "Aspect ratio diverges >10%: sRGB=\(String(format: "%.1f", srgbResult.aspect)) P3=\(String(format: "%.1f", p3Result.aspect))")
+    }
+
+    @Test("Detection consistency: sRGB vs deviceRGB color space",
+          .tags(.figures))
+    func colorSpaceSRGBvsDeviceRGB() async throws {
+        guard let original = loadDenHaagDoetImage() else {
+            Issue.record("Could not load DenHaagDoet test image")
+            return
+        }
+
+        let srgbSpace = CGColorSpace(name: CGColorSpace.sRGB)!
+        let deviceSpace = CGColorSpaceCreateDeviceRGB()
+
+        guard let srgbImage = convertToColorSpace(original, colorSpace: srgbSpace) else {
+            Issue.record("Failed to convert to sRGB")
+            return
+        }
+        guard let deviceImage = convertToColorSpace(original, colorSpace: deviceSpace) else {
+            Issue.record("Failed to convert to deviceRGB")
+            return
+        }
+
+        let srgbResult = try await runDetection(on: srgbImage)
+        let deviceResult = try await runDetection(on: deviceImage)
+
+        print("  sRGB:   bounds=(\(fmt(srgbResult.bounds))) aspect=\(String(format: "%.1f", srgbResult.aspect)):1 leftWhite=\(String(format: "%.1f", srgbResult.leftWhitePct))%")
+        print("  device: bounds=(\(fmt(deviceResult.bounds))) aspect=\(String(format: "%.1f", deviceResult.aspect)):1 leftWhite=\(String(format: "%.1f", deviceResult.leftWhitePct))%")
+
+        let boundsTolerance = 0.05
+        #expect(abs(srgbResult.bounds.minX - deviceResult.bounds.minX) < boundsTolerance,
+                "Bounds minX diverges: sRGB=\(srgbResult.bounds.minX) device=\(deviceResult.bounds.minX)")
+        #expect(abs(srgbResult.bounds.width - deviceResult.bounds.width) < boundsTolerance,
+                "Bounds width diverges: sRGB=\(srgbResult.bounds.width) device=\(deviceResult.bounds.width)")
+
+        #expect(srgbResult.leftWhitePct < 2.0,
+                "sRGB: left whitespace \(String(format: "%.1f", srgbResult.leftWhitePct))% should be <2%")
+        #expect(deviceResult.leftWhitePct < 2.0,
+                "deviceRGB: left whitespace \(String(format: "%.1f", deviceResult.leftWhitePct))% should be <2%")
+    }
+
+    // MARK: - Scale Factor Tests
+
+    @Test("Detection consistency: 1x vs 2x scale factor",
+          .tags(.figures))
+    func scaleConsistency1xVs2x() async throws {
+        guard let original = loadDenHaagDoetImage() else {
+            Issue.record("Could not load DenHaagDoet test image")
+            return
+        }
+
+        guard let scaled2x = scaleImage(original, factor: 2.0) else {
+            Issue.record("Failed to scale image to 2x")
+            return
+        }
+
+        let result1x = try await runDetection(on: original)
+        let result2x = try await runDetection(on: scaled2x)
+
+        print("  1x (\(original.width)×\(original.height)): bounds=(\(fmt(result1x.bounds))) aspect=\(String(format: "%.1f", result1x.aspect)):1 leftWhite=\(String(format: "%.1f", result1x.leftWhitePct))%")
+        print("  2x (\(scaled2x.width)×\(scaled2x.height)): bounds=(\(fmt(result2x.bounds))) aspect=\(String(format: "%.1f", result2x.aspect)):1 leftWhite=\(String(format: "%.1f", result2x.leftWhitePct))%")
+
+        // Normalized bounds should be nearly identical regardless of scale
+        let boundsTolerance = 0.05
+        #expect(abs(result1x.bounds.minX - result2x.bounds.minX) < boundsTolerance,
+                "Bounds minX diverges at 2x: 1x=\(result1x.bounds.minX) 2x=\(result2x.bounds.minX)")
+        #expect(abs(result1x.bounds.width - result2x.bounds.width) < boundsTolerance,
+                "Bounds width diverges at 2x: 1x=\(result1x.bounds.width) 2x=\(result2x.bounds.width)")
+        #expect(abs(result1x.bounds.height - result2x.bounds.height) < boundsTolerance,
+                "Bounds height diverges at 2x: 1x=\(result1x.bounds.height) 2x=\(result2x.bounds.height)")
+
+        // Both should have <2% left whitespace
+        #expect(result1x.leftWhitePct < 2.0,
+                "1x: left whitespace \(String(format: "%.1f", result1x.leftWhitePct))% should be <2%")
+        #expect(result2x.leftWhitePct < 2.0,
+                "2x: left whitespace \(String(format: "%.1f", result2x.leftWhitePct))% should be <2%")
+
+        // Aspect ratios should be within 10%
+        let aspectDiff = abs(result1x.aspect - result2x.aspect) / result1x.aspect
+        #expect(aspectDiff < 0.10,
+                "Aspect ratio diverges >10% at 2x: 1x=\(String(format: "%.1f", result1x.aspect)) 2x=\(String(format: "%.1f", result2x.aspect))")
+    }
+
+    @Test("Detection consistency: P3 color space at 2x scale",
+          .tags(.figures))
+    func colorSpaceP3At2xScale() async throws {
+        guard let original = loadDenHaagDoetImage() else {
+            Issue.record("Could not load DenHaagDoet test image")
+            return
+        }
+
+        // Simulate a Retina Apple display: P3 color space + 2x resolution
+        let p3Space = CGColorSpace(name: CGColorSpace.displayP3)!
+        guard let p3Image = convertToColorSpace(original, colorSpace: p3Space),
+              let p3At2x = scaleImage(p3Image, factor: 2.0) else {
+            Issue.record("Failed to create P3@2x image")
+            return
+        }
+
+        // Baseline: original image (likely sRGB@1x)
+        let baselineResult = try await runDetection(on: original)
+        let p3Result = try await runDetection(on: p3At2x)
+
+        print("  baseline (\(original.width)×\(original.height)): bounds=(\(fmt(baselineResult.bounds))) aspect=\(String(format: "%.1f", baselineResult.aspect)):1 leftWhite=\(String(format: "%.1f", baselineResult.leftWhitePct))%")
+        print("  P3@2x (\(p3At2x.width)×\(p3At2x.height)): bounds=(\(fmt(p3Result.bounds))) aspect=\(String(format: "%.1f", p3Result.aspect)):1 leftWhite=\(String(format: "%.1f", p3Result.leftWhitePct))%")
+
+        let boundsTolerance = 0.05
+        #expect(abs(baselineResult.bounds.minX - p3Result.bounds.minX) < boundsTolerance,
+                "P3@2x bounds minX diverges: baseline=\(baselineResult.bounds.minX) P3@2x=\(p3Result.bounds.minX)")
+        #expect(abs(baselineResult.bounds.width - p3Result.bounds.width) < boundsTolerance,
+                "P3@2x bounds width diverges: baseline=\(baselineResult.bounds.width) P3@2x=\(p3Result.bounds.width)")
+
+        #expect(baselineResult.leftWhitePct < 2.0,
+                "baseline: left whitespace should be <2%")
+        #expect(p3Result.leftWhitePct < 2.0,
+                "P3@2x: left whitespace \(String(format: "%.1f", p3Result.leftWhitePct))% should be <2%")
+    }
+
+    // MARK: - Helpers
+
+    private func fmt(_ r: CGRect) -> String {
+        String(format: "%.3f %.3f %.3f %.3f", r.minX, r.minY, r.width, r.height)
     }
 }

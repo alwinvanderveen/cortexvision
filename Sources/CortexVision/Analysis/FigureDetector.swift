@@ -55,6 +55,9 @@ public final class FigureDetector: Sendable {
     /// Enable pipeline debug output. Set to true or use FIGURE_DEBUG=1 env var.
     public let debug: Bool
 
+    /// Overlay text analyzer — classifies text blocks as overlay/edgeOverlay/pageText/uncertain.
+    private let overlayAnalyzer: any OverlayTextAnalyzing
+
     public init(
         minimumAreaFraction: CGFloat = 0.03,
         mergeOverlapThreshold: CGFloat = 0.5,
@@ -69,6 +72,7 @@ public final class FigureDetector: Sendable {
         self.minimumSaliencyConfidence = minimumSaliencyConfidence
         self.minimumColorVariance = minimumColorVariance
         self.debug = debug ?? (ProcessInfo.processInfo.environment["FIGURE_DEBUG"] == "1")
+        self.overlayAnalyzer = HeuristicOverlayTextAnalyzer(debug: self.debug)
     }
 
     private static let debugLogURL: URL = URL(fileURLWithPath: "/tmp/cortexvision-analysis-debug.log")
@@ -467,6 +471,20 @@ public final class FigureDetector: Sendable {
     ) -> [FigureCandidate] {
         var result = candidates
 
+        // Compute page-level background color once for all candidates.
+        let pageBgColor: (r: Double, g: Double, b: Double) = {
+            guard let ctx = CGContext(
+                data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return (255, 255, 255) }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            guard let data = ctx.data else { return (255, 255, 255) }
+            let ptr = data.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+            return FigureDetector.sampleBackgroundColor(ptr: ptr, width: image.width, height: image.height)
+        }()
+
         for i in 0..<result.count {
             // 3A: Build content map with 20% padding around candidate,
             // expanded to include overlapping subject bounds (subjects may extend
@@ -527,8 +545,16 @@ public final class FigureDetector: Sendable {
             }
 
             // 3D: Validate — trim text if any crept in
+            // Use the OverlayTextAnalyzer for local patch-based overlay classification.
+            // Only text classified as .pageText is used for trimming.
+            let trimText = overlayAnalyzer.filterForTrimming(
+                figure: result[i].bounds,
+                textBounds: textBounds,
+                image: image,
+                pageBgColor: pageBgColor
+            )
             let preTrim = result[i].bounds
-            result[i].bounds = trimTextFromRegion(result[i].bounds, textBounds: textBounds)
+            result[i].bounds = trimTextFromRegion(result[i].bounds, textBounds: trimText)
             if debug && result[i].bounds != preTrim {
                 dbg("  TRIM: h \(String(format:"%.3f",preTrim.height)) → \(String(format:"%.3f",result[i].bounds.height))")
             }
@@ -569,8 +595,9 @@ public final class FigureDetector: Sendable {
             }
         }
 
-        // Final merge
-        let mergedBounds = mergeOverlapping(result.map(\.bounds))
+        // Final merge: IoU-based + adjacency-based (same-row figures)
+        let iouMerged = mergeOverlapping(result.map(\.bounds))
+        let mergedBounds = mergeHorizontallyAdjacent(iouMerged)
         result = mergedBounds.map { bounds in
             let matching = result.filter { !$0.bounds.intersection(bounds).isNull }
             let best = matching.max(by: { $0.confidence < $1.confidence }) ?? result[0]
@@ -584,8 +611,15 @@ public final class FigureDetector: Sendable {
 
         // Re-trim text after merge: mergeOverlapping uses union which can
         // re-expand bounds to include text that was trimmed in step 3D.
+        // Use the same OverlayTextAnalyzer for consistent overlay classification.
         for i in 0..<result.count {
-            result[i].bounds = trimTextFromRegion(result[i].bounds, textBounds: textBounds)
+            let trimText = overlayAnalyzer.filterForTrimming(
+                figure: result[i].bounds,
+                textBounds: textBounds,
+                image: image,
+                pageBgColor: pageBgColor
+            )
+            result[i].bounds = trimTextFromRegion(result[i].bounds, textBounds: trimText)
         }
 
         return result
@@ -601,6 +635,23 @@ public final class FigureDetector: Sendable {
         subjectBounds: [CGRect]
     ) -> FigureDetectionResult {
         var figures: [DetectedFigure] = []
+
+        // Compute page-level background brightness once for all candidates.
+        // This prevents autoCropWhitespace from re-sampling on dark photo figures
+        // and treating the photo as background.
+        let pageBgBrightness: Double? = {
+            guard let ctx = CGContext(
+                data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else { return nil }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            guard let data = ctx.data else { return nil }
+            let ptr = data.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
+            let bg = FigureDetector.sampleBackgroundColor(ptr: ptr, width: image.width, height: image.height)
+            return (bg.r + bg.g + bg.b) / 3.0
+        }()
 
         for candidate in candidates {
             let bounds = candidate.bounds
@@ -649,8 +700,8 @@ public final class FigureDetector: Sendable {
                 continue
             }
 
-            // Auto-crop whitespace
-            let (whiteCropped, whiteCropRect) = autoCropWhitespace(cropped)
+            // Auto-crop whitespace using page-level background brightness
+            let (whiteCropped, whiteCropRect) = autoCropWhitespace(cropped, pageBgBrightness: pageBgBrightness)
 
             // Variance-based tightening (skip when subject confirms photo)
             let finalCropped: CGImage
@@ -669,16 +720,33 @@ public final class FigureDetector: Sendable {
                 )
             }
 
+            // Post-crop validation: if autoCrop/tightenByVariance reduced the figure to
+            // an implausible fraction of the original (e.g. dark photo treated as background),
+            // fall back to the pre-crop image. This prevents the cascade failure where
+            // a dark photo figure gets destroyed by autoCrop re-sampling the wrong background.
+            let cropRetainedFraction = (finalCropRect.width * finalCropRect.height)
+                / (CGFloat(cropped.width) * CGFloat(cropped.height))
+            let validatedCropped: CGImage
+            let validatedCropRect: CGRect
+            if cropRetainedFraction < 0.15 {
+                dbg("PASS4 crop validation: retained only \(String(format: "%.1f%%", cropRetainedFraction * 100)) — falling back to pre-crop")
+                validatedCropped = cropped
+                validatedCropRect = CGRect(x: 0, y: 0, width: cropped.width, height: cropped.height)
+            } else {
+                validatedCropped = finalCropped
+                validatedCropRect = finalCropRect
+            }
+
             // Recalculate normalized bounds
             let tightBounds: CGRect
-            if finalCropped.width != cropped.width || finalCropped.height != cropped.height {
-                let tightPixelX = clampedRect.origin.x + finalCropRect.origin.x
-                let tightPixelY = clampedRect.origin.y + finalCropRect.origin.y
+            if validatedCropped.width != cropped.width || validatedCropped.height != cropped.height {
+                let tightPixelX = clampedRect.origin.x + validatedCropRect.origin.x
+                let tightPixelY = clampedRect.origin.y + validatedCropRect.origin.y
                 tightBounds = CGRect(
                     x: tightPixelX / CGFloat(image.width),
-                    y: 1.0 - (tightPixelY + finalCropRect.height) / CGFloat(image.height),
-                    width: finalCropRect.width / CGFloat(image.width),
-                    height: finalCropRect.height / CGFloat(image.height)
+                    y: 1.0 - (tightPixelY + validatedCropRect.height) / CGFloat(image.height),
+                    width: validatedCropRect.width / CGFloat(image.width),
+                    height: validatedCropRect.height / CGFloat(image.height)
                 )
             } else {
                 tightBounds = bounds
@@ -687,7 +755,7 @@ public final class FigureDetector: Sendable {
             figures.append(DetectedFigure(
                 bounds: tightBounds,
                 label: DetectedFigure.label(for: figures.count),
-                extractedImage: finalCropped,
+                extractedImage: validatedCropped,
                 isSelected: true
             ))
         }
@@ -1265,7 +1333,7 @@ public final class FigureDetector: Sendable {
     /// columns for brightness differences from the border color. This tightens the figure
     /// bounds to the actual visual content.
     /// Returns the cropped image and the crop rect in pixel coordinates relative to the input.
-    func autoCropWhitespace(_ image: CGImage) -> (image: CGImage, cropRect: CGRect) {
+    func autoCropWhitespace(_ image: CGImage, pageBgBrightness: Double? = nil) -> (image: CGImage, cropRect: CGRect) {
         let width = image.width
         let height = image.height
         let fullRect = CGRect(x: 0, y: 0, width: width, height: height)
@@ -1287,15 +1355,20 @@ public final class FigureDetector: Sendable {
         // aggressive trimming of light-colored edges (gradients fading to white).
         let threshold: Double = 20.0
 
-        // Use the brightest edge as background reference. Backgrounds are typically
-        // white or light-colored, so the brightest edge is most likely the background.
-        let edgeBrightnesses = [
-            rowBrightness(ptr: ptr, y: 0, width: width),
-            rowBrightness(ptr: ptr, y: height - 1, width: width),
-            colBrightness(ptr: ptr, x: 0, width: width, height: height),
-            colBrightness(ptr: ptr, x: width - 1, width: width, height: height),
-        ]
-        let bgBrightness = edgeBrightnesses.max() ?? 255.0
+        // Use page-level background brightness if provided (prevents dark photo figures
+        // from being treated as background). Fall back to brightest edge of the figure.
+        let bgBrightness: Double
+        if let pageBg = pageBgBrightness, pageBg > 200 {
+            bgBrightness = pageBg
+        } else {
+            let edgeBrightnesses = [
+                rowBrightness(ptr: ptr, y: 0, width: width),
+                rowBrightness(ptr: ptr, y: height - 1, width: width),
+                colBrightness(ptr: ptr, x: 0, width: width, height: height),
+                colBrightness(ptr: ptr, x: width - 1, width: width, height: height),
+            ]
+            bgBrightness = edgeBrightnesses.max() ?? 255.0
+        }
 
         // Only auto-crop if the background is light (>200 brightness = near white/gray)
         guard bgBrightness > 200 else { return (image, fullRect) }
@@ -2273,6 +2346,57 @@ public final class FigureDetector: Sendable {
                         current = current.union(merged[j])
                         used.insert(j)
                         changed = true
+                    }
+                }
+                result.append(current)
+            }
+            merged = result
+        }
+
+        return merged
+    }
+
+    /// Merges regions that share the same vertical band (>70% vertical overlap)
+    /// and are horizontally adjacent or slightly overlapping (gap < 5%).
+    /// This catches side-by-side figures (e.g. a promoted subject next to its parent saliency region).
+    func mergeHorizontallyAdjacent(_ regions: [CGRect]) -> [CGRect] {
+        guard regions.count > 1 else { return regions }
+
+        let verticalOverlapThreshold: CGFloat = 0.70
+        let maxHorizontalGap: CGFloat = 0.05
+
+        var merged = regions
+        var changed = true
+
+        while changed {
+            changed = false
+            var result: [CGRect] = []
+            var used = Set<Int>()
+
+            for i in 0..<merged.count {
+                guard !used.contains(i) else { continue }
+
+                var current = merged[i]
+                for j in (i + 1)..<merged.count {
+                    guard !used.contains(j) else { continue }
+
+                    let other = merged[j]
+
+                    // Check vertical overlap fraction
+                    let vOverlap = min(current.maxY, other.maxY) - max(current.minY, other.minY)
+                    let minHeight = min(current.height, other.height)
+                    guard minHeight > 0 else { continue }
+                    let vFraction = max(0, vOverlap) / minHeight
+
+                    guard vFraction > verticalOverlapThreshold else { continue }
+
+                    // Check horizontal gap (negative = overlap, which is fine)
+                    let hGap = max(other.minX - current.maxX, current.minX - other.maxX)
+                    if hGap < maxHorizontalGap {
+                        current = current.union(other)
+                        used.insert(j)
+                        changed = true
+                        dbg("MERGE adjacent: vOverlap=\(String(format: "%.0f%%", vFraction * 100)) hGap=\(String(format: "%.3f", hGap))")
                     }
                 }
                 result.append(current)
