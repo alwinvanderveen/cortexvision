@@ -512,6 +512,23 @@ Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overl
 | TC-5a.6 | Verplaats overlay buiten beeldrand | Bounds worden geclampt binnen 0..1 |
 | TC-5a.7 | Re-extractie na resize | Nieuwe CGImage heeft aangepaste dimensies |
 
+**AppViewModel overlay-logica (BLOCKER: tests ontbreken voor deelstap 2)**
+
+De volgende AppViewModel-methoden zijn geïmplementeerd maar hebben nog GEEN unit tests.
+**Deze tests MOETEN worden geschreven vóórdat deelstap 3 en 4 worden gestart.**
+
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5a.11 | `buildOverlayItems` na analyse | overlayItems bevat gegroepeerde tekst + figuur items |
+| TC-5a.12 | `selectOverlay(id:)` | selectedOverlayId wijzigt, vorige deselecteert, nieuwe selecteert |
+| TC-5a.13 | `moveOverlay(id:dx:dy:)` | bounds verschuift correct, geclampt binnen 0..1 |
+| TC-5a.14 | `resizeOverlay(id:to:)` | bounds wijzigt naar nieuwe waarde, geclampt |
+| TC-5a.15 | `deleteSelectedOverlay()` | geselecteerde overlay verwijderd uit array, selectedOverlayId nil |
+| TC-5a.16 | `addManualFigureOverlay(bounds:)` | nieuw item met isManual=true, kind=.figure, wordt geselecteerd |
+| TC-5a.17 | `toggleOverlayExclusion(id:)` | isExcluded togglet, visueel doorgestreept |
+| TC-5a.18 | `reExtractFigure(for:)` | figureResult wordt bijgewerkt met nieuwe CGImage na bounds-wijziging |
+| TC-5a.19 | Coordinate conversie in InteractiveOverlayView | viewToNormalized en normalizedRect geven correcte waarden |
+
 ---
 
 ## UC-6: Scrolling Capture
