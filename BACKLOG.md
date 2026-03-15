@@ -570,8 +570,21 @@ Eén exclusion-mechanisme (`OverlayItem.isExcluded`) als single source of truth 
 #### Deelstap 2: Overlay-tekst Classificatie & UI
 Tekst op figuren visueel onderscheiden, koppelen aan de bijbehorende figuur, en apart excludeerbaar maken.
 
-#### Deelstap 3: LaMa Inpainting Pipeline
-Wanneer overlay-tekst wordt geëxcludeerd, de figuur retoucheren met LaMa om de tekst visueel te verwijderen.
+#### Deelstap 3: Two-Pass Inpainting met OCR-Anchored Residue Analysis
+
+**Doel:** Generieke, productie-waardige pipeline voor het verwijderen van UI-overlays (buttons, badges, labels, watermarks, cutouts en vergelijkbare elementen) van figuren in screen captures. Werkt voor willekeurige UI-element kleuren, vormen, posities en tekst-offsets. Geen architectuur- of acceptatiebeslissing die afhankelijk is van de bijzonderheden van één referentiefoto.
+
+**Strategie:**
+- **Pass 1:** Tight text-only mask → LaMa verwijdert tekst-glyphs. Na pass 1 wordt een eventueel UI-element achtergrond (button, badge) uniformer en componentmatig beter scheidbaar van foto-content.
+- **Residue-analyse:** OCR-anchored multi-signal scored detection op pass-1 output. Detecteert overgebleven UI-element residue via meerdere convergerende signalen (kleur-ruimte segmentatie, connected components, compactness, uniformiteit, grenscontrast, relatieve grootte). Geen enkel signaal is op zichzelf voldoende. Observability verplicht.
+- **Pass 2 (conditioneel):** Als kandidaat-blobs gevonden met voldoende multi-signal confidence: expanded mask (text + blobs) → LaMa op de ORIGINELE crop (niet pass-1 output, voorkomt artifact-compounding).
+- **Validatiegate:** Lokaal (context-ring rond kandidaat: schade buiten mask detecteren) + globaal (preserve metrics hele figuur). Failure → mandatory fallback naar pass 1 resultaat.
+- **Fast path:** Als geen voldoende zekere kandidaat → return pass 1 (geen onnodige pass 2).
+- **Fallback:** `uncertain => pass 1 resultaat`. Conservatief: liever UI-element laten staan dan foto beschadigen.
+
+**Interactiemodel:** De gebruiker werkt niet met "pass 1" of "pass 2" — dat zijn interne pipeline-details. Exclude overlay → systeem kiest beste veilige route. Undo → terug naar origineel.
+
+**Architectuurverwijzing:** De huidige border-seeded / magic-wand aanpak (`enhanceMaskWithUIElements`) is structureel verkeerd en wordt volledig vervangen. Zie `docs/PROBLEM-inpainting-mask-strategy.md` en `docs/SOLUTIONS-inpainting-mask-strategy.md`.
 
 ### Classificatie per onderdeel
 | Onderdeel | Classificatie | Toelichting |
@@ -582,11 +595,17 @@ Wanneer overlay-tekst wordt geëxcludeerd, de figuur retoucheren met LaMa om de 
 | `associatedFigureOverlayId` op OverlayItem | `PRODUCTIE` | Koppelt overlay-tekst aan de figuur waarop het staat |
 | Visueel onderscheid overlay-tekst (oranje) | `PRODUCTIE` | Ander kleur + label "Text on Figure" |
 | ResultsPanel: overlay-tekst onder figuur tonen | `PRODUCTIE` | Gegroepeerde weergave per figuur |
-| `TextMaskGenerator` | `PRODUCTIE` | OCR bounds → binary mask voor inpainting input |
+| `TextMaskGenerator` | `PRODUCTIE` | OCR bounds → tight conservative text-only mask. Padding is kalibreerbaar, niet een vaste architectuurbeslissing |
 | `LaMaInpainter` | `PRODUCTIE` | ONNX Runtime, 512×512 fixed input, CoreML EP |
-| `FigureInpaintingPipeline` | `PRODUCTIE` | Mask → crop → resize → inpaint → composite |
+| `FigureInpaintingPipeline` | `PRODUCTIE` | Orkestrator: pass 1 → residue analysis → validation → pass 2 / fallback |
+| `ResidueAnalyzer` (multi-signal scored detection) | `PRODUCTIE` | Generiek ontwerp voor willekeurige UI-overlays. OCR-anchored analyse op pass-1 output. Meerdere convergerende signalen (kleur-ruimte segmentatie, connected components, compactness, uniformiteit, grenscontrast, relatieve grootte). Geen enkel signaal voldoende op zichzelf. Observability verplicht (per-component scores, reject redenen, debug output). Na pass 1 is de discriminatie structureel eenvoudiger (uniform element vs getextureerde foto) |
+| Pass 2 op originele crop | `PRODUCTIE` | Voorkomt artifact-compounding. Alleen triggered bij voldoende candidate confidence |
+| Validatiegate (lokaal + globaal) | `PRODUCTIE` | Lokaal: context-ring rond kandidaat-masker controleert schade buiten mask. Globaal: preserve metrics op hele figuur. Failure → fallback naar pass 1 |
+| Fast path (geen kandidaten → pass 1) | `PRODUCTIE` | Performance: ~1s i.p.v. ~2s als geen UI-elementen gedetecteerd |
+| `uncertain => pass 1 resultaat` | `PRODUCTIE` | Conservatief-correct: liever button laten staan dan foto beschadigen |
 | Origineel-herstel bij undo exclude | `PRODUCTIE` | Originele extractedImage bewaren voor rollback |
 | Graceful degradation bij model-falen | `PRODUCTIE` | Figuur ongewijzigd als inpainting faalt |
+| `enhanceMaskWithUIElements` (huidige code) | `VERWIJDEREN` | Structureel verkeerd (border-seeded, vereist dat UI-element de tekst-mask omringt) |
 
 ### Acceptatiecriteria
 
@@ -605,16 +624,41 @@ Wanneer overlay-tekst wordt geëxcludeerd, de figuur retoucheren met LaMa om de 
 - [x] Overlay-tekst kan apart worden geëxcludeerd
 - [x] Overlay-tekst wordt niet gegroepeerd met page-tekst door TextBlockGrouper
 
-**Deelstap 3 — LaMa Inpainting**
+**Deelstap 3 — Two-Pass Inpainting met Residue Analysis**
+
+*Spike (blokkerend, generiek geformuleerd, vóór implementatie):*
+- [ ] Voor een representatieve set overlay-gevallen: pass 1 maakt de overlay-regio lokaal uniformer en componentmatig beter scheidbaar dan het origineel (kleur-onafhankelijk gemeten via variance-reductie en component-analyse). Referentie-image als bewijsmateriaal, niet als optimalisatiedoel.
+
+*Pass 1 (text-only):*
 - [ ] LaMa ONNX model laadt succesvol op Apple Silicon
-- [ ] Binary mask wordt correct gegenereerd uit tekst-bounds
-- [ ] Inpainting verwijdert tekst visueel uit figuur-afbeelding
-- [ ] Inpainting kwaliteit is hoog (geen zichtbare artefacten bij uniforme achtergronden)
+- [ ] Tight text-only mask wordt correct gegenereerd uit OCR-bounds (padding kalibreerbaar)
+- [ ] Pass 1 verwijdert tekst-glyphs visueel uit figuur
+
+*Residue Analysis:*
+- [ ] `ResidueAnalyzer` is een aparte component (niet in `FigureInpaintingPipeline` gemixed)
+- [ ] Multi-signal scored detection: geen enkel signaal is op zichzelf voldoende
+- [ ] Kandidaat-detectie is OCR-anchored: alleen in lokale ROI rond tekst-bounds
+- [ ] Signalen omvatten minimaal: kleur-ruimte segmentatie, connected components, compactness, interne uniformiteit, grenscontrast, relatieve grootte
+- [ ] Numerieke parameters zijn kalibreerbaar en gedocumenteerd als evaluatieparameters, niet als vaste productwaarheid
+- [ ] Observability: per-component debug output (bounds, scores per signaal, accept/reject reden)
+- [ ] `uncertain => geen pass 2` (mandatory fallback)
+
+*Pass 2 (conditioneel):*
+- [ ] Pass 2 draait op de ORIGINELE figuur-crop, niet op pass-1 output
+- [ ] Expanded mask = text mask + geaccepteerde blob shapes
+- [ ] Fast path: als geen kandidaten → return pass 1 resultaat (~1s)
+
+*Validatiegate:*
+- [ ] Lokaal: context-ring rond kandidaat-masker — schade BUITEN mask detecteren
+- [ ] Globaal: preserve metrics op hele figuur (preservedPct, avgPreserveDiff)
+- [ ] Als validatie faalt → mandatory fallback naar pass 1 resultaat
+
+*Overig:*
 - [ ] Geretoucheerde figuur is zichtbaar in preview en results panel
 - [ ] Bij undo exclude (re-include): originele figuur wordt hersteld
-- [ ] Bij inpainting-falen: figuur blijft ongewijzigd, gebruiker krijgt melding
-- [ ] Inpainting duurt <2 seconden per figuur op Apple Silicon
-- [ ] Model werkt op CPU als CoreML EP niet beschikbaar is
+- [ ] Bij inpainting-falen: figuur blijft ongewijzigd
+- [ ] `enhanceMaskWithUIElements` volledig verwijderd
+- [ ] Totale inpainting duurt <3 seconden per figuur op Apple Silicon (2 passes)
 
 ### Testcases — Unit (draaien overal, ook CI)
 
@@ -638,28 +682,58 @@ Wanneer overlay-tekst wordt geëxcludeerd, de figuur retoucheren met LaMa om de 
 | TC-5b.11 | Exclude overlay-tekst → excludedTextBlockIds bevat bron-IDs | IDs van overlay-tekst blokken in set |
 | TC-5b.12 | Tekst zonder figuren → alle classificaties zijn `.pageText` | Geen overlay-tekst classificaties |
 
-**Deelstap 3: LaMa Inpainting**
-| ID | Beschrijving | Verwacht resultaat |
-|----|-------------|-------------------|
-| TC-5b.13 | `TextMaskGenerator`: enkele tekst-bounds → mask heeft witte pixels op tekst-positie | Mask pixels zijn 255 binnen bounds, 0 buiten |
-| TC-5b.14 | `TextMaskGenerator`: meerdere tekst-bounds → union mask | Alle tekst-posities wit in mask |
-| TC-5b.15 | `TextMaskGenerator`: lege bounds → volledig zwarte mask | Geen witte pixels |
-| TC-5b.16 | `TextMaskGenerator`: bounds buiten afbeelding → geclampt, geen crash | Mask bevat alleen geldige pixels |
-| TC-5b.17 | `LaMaInpainter`: model initialiseert succesvol | Geen error, session is actief |
-| TC-5b.18 | `LaMaInpainter`: inference op 512×512 test-image + mask → output 512×512 | Output dimensies correct |
-| TC-5b.19 | `LaMaInpainter`: inpainted pixels in mask-regio wijken af van origineel | Gemiddelde pixelverschil in mask-regio > threshold |
-| TC-5b.20 | `LaMaInpainter`: pixels buiten mask-regio zijn (nagenoeg) ongewijzigd | Gemiddelde pixelverschil buiten mask < threshold |
-| TC-5b.21 | `FigureInpaintingPipeline`: crop + inpaint + composite round-trip | Output image heeft zelfde dimensies als input |
-| TC-5b.22 | `FigureInpaintingPipeline`: composite behoudt pixels buiten figuur-bounds | Pixels buiten crop-regio ongewijzigd |
-| TC-5b.23 | `FigureInpaintingPipeline`: model niet beschikbaar → graceful fallback | Retourneert originele afbeelding, geen crash |
-| TC-5b.24 | Origineel-herstel: exclude → inpaint → re-include → origineel terug | extractedImage is identiek aan pre-inpaint |
+**Deelstap 3: Two-Pass Inpainting + Residue Analysis**
 
-### Testcases — Integration (alleen lokaal, vereist screen recording permissie)
+*Spike (blokkerend):*
 | ID | Beschrijving | Verwacht resultaat |
 |----|-------------|-------------------|
-| TC-5b.30 | Capture nieuwspagina met tekst op hero-foto → overlay-tekst gedetecteerd | Minimaal 1 tekst-overlay met classificatie `.overlay` |
-| TC-5b.31 | Exclude overlay-tekst → figuur preview toont retouchering | Tekst is visueel verwijderd uit figuur in ResultsPanel |
-| TC-5b.32 | Re-include overlay-tekst → figuur preview toont origineel | Tekst is weer zichtbaar in figuur |
+| TC-5b.S1 | Pass 1 op overlay-tekst gevallen: variance in voormalige tekst-ROI na pass 1 vs origineel | Variance is lager na pass 1 (regio uniformer). Generiek, niet kleur-specifiek |
+| TC-5b.S2 | Connected component analyse op pass-1 tekst-ROI: compactness van grootste component | Compactness hoger dan in origineel (beter scheidbaar). Referentie-image als bewijs, niet als doel |
+
+*TextMaskGenerator:*
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.13 | Enkele tekst-bounds → mask heeft witte pixels op tekst-positie | Mask pixels zijn 255 binnen bounds, 0 buiten |
+| TC-5b.14 | Meerdere tekst-bounds → union mask | Alle tekst-posities wit in mask |
+| TC-5b.15 | Lege bounds → volledig zwarte mask | Geen witte pixels |
+| TC-5b.16 | Bounds buiten afbeelding → geclampt, geen crash | Mask bevat alleen geldige pixels |
+
+*LaMaInpainter:*
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.17 | Model initialiseert succesvol | Geen error, session is actief |
+| TC-5b.18 | Inference op 512×512 test-image + mask → output 512×512 | Output dimensies correct |
+| TC-5b.19 | Inpainted pixels in mask-regio wijken af van origineel | Pixelverschil in mask-regio meetbaar |
+| TC-5b.20 | Pixels buiten mask-regio zijn (nagenoeg) ongewijzigd | Pixelverschil buiten mask minimaal |
+
+*ResidueAnalyzer:*
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.25 | Synthetisch: uniforme bg + hoog-gesatureerd compact component → gedetecteerd | Kandidaat gevonden |
+| TC-5b.26 | Synthetisch: foto-textuur zonder tekst-bounds → 0 kandidaten | Proximity filter werkt |
+| TC-5b.27 | Synthetisch: component ver van tekst-bound → gefilterd | Proximity filter werkt |
+| TC-5b.28 | Synthetisch: te groot component (>5% figuur) → gefilterd | Relatieve grootte filter werkt |
+| TC-5b.29 | Synthetisch: niet-compact component (textuur) → gefilterd | Compactness filter werkt |
+| TC-5b.30 | Synthetisch: laag-gesatureerde blob → niet gedetecteerd | Kleur-signaal werkt |
+| TC-5b.31 | Synthetisch: hoge interne variance → gefilterd | Uniformity filter werkt |
+| TC-5b.32 | Observability: debug output bevat per-component scores en reject redenen | Output bevat bounds, scores, redenen |
+
+*Pipeline / Validatie:*
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.33 | Pipeline: crop + pass 1 + (optioneel pass 2) + composite round-trip | Output dimensies correct |
+| TC-5b.34 | Pipeline: model niet beschikbaar → graceful fallback | Retourneert originele afbeelding, geen crash |
+| TC-5b.35 | Origineel-herstel: exclude → inpaint → re-include → origineel terug | extractedImage identiek aan pre-inpaint |
+| TC-5b.36 | Validatiegate: geforceerde grote blob → lokale validatie verwerpt → pass 1 resultaat | Fallback correct |
+| TC-5b.37 | Fast path: figuur zonder UI-elementen → geen pass 2 triggered | Alleen 1 LaMa-pass |
+
+*Integration / Regressie (referentie-image als bewijs, niet als optimalisatiedoel):*
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.40 | `testMultipleImageNews2` fig met UI-overlay: hoog-gesatureerde overlay-pixels na inpaint | >80% reductie van UI-overlay pixels (generiek: hoge saturatie in origineel, verdwenen na inpaint) |
+| TC-5b.41 | `testMultipleImageNews2` fig met UI-overlay: foto-pixels behouden | >70% preserved, avgPreserveDiff <5 |
+| TC-5b.42 | `testMultipleImageNews2` fig zonder UI-overlay: geen pass 2 triggered | Fast path, quality ongewijzigd |
+| TC-5b.43 | `testMultipleImageNews2` fig met UI-overlay: lokale validatie | Geen collateral damage buiten expanded mask (context-ring check) |
 
 ---
 
