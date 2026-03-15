@@ -34,9 +34,18 @@ struct MainView: View {
                     captureState: viewModel.captureState,
                     ocrResult: viewModel.ocrResult,
                     figureResult: viewModel.figureResult,
-                    excludedTextOverlayIds: Set(viewModel.overlayItems.filter { $0.kind == .text && $0.isExcluded }.map(\.id)),
-                    onToggleFigure: { index in
-                        viewModel.toggleFigureSelection(at: index)
+                    includedTextBlockIds: viewModel.includedTextBlockIds,
+                    excludedFigureIndices: viewModel.excludedFigureIndices,
+                    overlayTextItems: viewModel.overlayItems.filter {
+                        $0.kind == .text && ($0.textOverlayClassification == .overlay || $0.textOverlayClassification == .edgeOverlay)
+                    },
+                    figureOverlayIds: Dictionary(
+                        uniqueKeysWithValues: viewModel.overlayItems
+                            .filter { $0.kind == .figure && $0.sourceFigureIndex != nil }
+                            .map { ($0.sourceFigureIndex!, $0.id) }
+                    ),
+                    onToggleFigureExclusion: { index in
+                        viewModel.toggleFigureExclusionByIndex(index)
                     }
                 )
                     .frame(minWidth: 220, idealWidth: 300)

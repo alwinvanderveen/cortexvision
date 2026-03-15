@@ -430,7 +430,7 @@ Als gebruiker wil ik dat figuren (grafieken, diagrammen, afbeeldingen, tabellen,
 
 ## UC-5a: Interactieve Figuur & Tekst Overlay Correctie
 
-**Status:** `IN PROGRESS`
+**Status:** `DONE`
 
 ### Beschrijving
 Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overlays) handmatig kunnen verplaatsen, vergroten/verkleinen en verwijderen in de preview, zodat ik de detectie kan corrigeren wanneer deze niet perfect is. Daarnaast wil ik nieuwe figuurvlakken handmatig kunnen toevoegen. Tekst-overlays worden gegroepeerd tot logische blokken in plaats van per regel getoond.
@@ -485,12 +485,12 @@ Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overl
 - [x] Overlay kan worden vergroot/verkleind via handgrepen
 - [x] Delete-toets verwijdert geselecteerde overlay
 - [x] Klik+sleep op lege plek tekent nieuw figuurvlak
-- [ ] Na verplaatsen/resizen wordt de figuur opnieuw uitgesneden
-- [ ] Individuele tekstblokken kunnen worden uitgesloten via toggle
-- [ ] Preview paneel is primair werkgebied (~65% van de breedte)
-- [ ] Splitview verhouding is aanpasbaar door gebruiker
-- [ ] Preview ondersteunt zoom en pan voor nauwkeurig werk
-- [ ] Bij zoom schalen overlays mee en blijven positioneerbaar
+- [x] Na verplaatsen/resizen wordt de figuur opnieuw uitgesneden
+- [x] Individuele tekstblokken kunnen worden uitgesloten via toggle
+- [x] Preview paneel is primair werkgebied (~65% van de breedte)
+- [x] Splitview verhouding is aanpasbaar door gebruiker
+- [x] Preview ondersteunt zoom en pan voor nauwkeurig werk
+- [x] Bij zoom schalen overlays mee en blijven positioneerbaar
 
 ### Testcases — Unit (draaien overal, ook CI)
 
@@ -512,22 +512,154 @@ Als gebruiker wil ik de automatisch gedetecteerde figuur- en tekstvlakken (overl
 | TC-5a.6 | Verplaats overlay buiten beeldrand | Bounds worden geclampt binnen 0..1 |
 | TC-5a.7 | Re-extractie na resize | Nieuwe CGImage heeft aangepaste dimensies |
 
-**AppViewModel overlay-logica (BLOCKER: tests ontbreken voor deelstap 2)**
+**AppViewModel overlay-logica (geëxtraheerd naar OverlayInteractionController)**
 
-De volgende AppViewModel-methoden zijn geïmplementeerd maar hebben nog GEEN unit tests.
-**Deze tests MOETEN worden geschreven vóórdat deelstap 3 en 4 worden gestart.**
+Overlay-interactielogica is geëxtraheerd naar `OverlayInteractionController` in de CortexVision library
+voor testbaarheid zonder SwiftUI-afhankelijkheid. AppViewModel delegeert via `overlayController`.
 
+| ID | Beschrijving | Verwacht resultaat | Status |
+|----|-------------|-------------------|--------|
+| TC-5a.11 | `buildOverlayItems` na analyse | overlayItems bevat gegroepeerde tekst + figuur items | PASS |
+| TC-5a.12 | `selectOverlay(id:)` | selectedOverlayId wijzigt, vorige deselecteert, nieuwe selecteert | PASS |
+| TC-5a.13 | `moveOverlay(id:dx:dy:)` | bounds verschuift correct, geclampt binnen 0..1 | PASS |
+| TC-5a.14 | `resizeOverlay(id:to:)` | bounds wijzigt naar nieuwe waarde, geclampt | PASS |
+| TC-5a.15 | `deleteSelectedOverlay()` | geselecteerde overlay verwijderd uit array, selectedOverlayId nil | PASS |
+| TC-5a.16 | `addManualFigureOverlay(bounds:)` | nieuw item met isManual=true, kind=.figure, wordt geselecteerd | PASS |
+| TC-5a.17 | `toggleOverlayExclusion(id:)` | isExcluded togglet | PASS |
+| TC-5a.18 | `reExtractFigure(for:)` | figureResult wordt bijgewerkt met nieuwe CGImage na bounds-wijziging | PASS |
+| TC-5a.19 | Coordinate conversie (pixelRect, normalizedBounds, round-trip) | Correcte waarden, zero-image edge case, round-trip preserves bounds | PASS |
+
+---
+
+## UC-5b: Unified Overlay Exclusion & Figuur Tekst Retouchering
+
+**Status:** `IN PROGRESS`
+
+### Beschrijving
+Als gebruiker wil ik één consistente manier om overlays (tekst en figuur) te includeren of excluderen voor export, zodat de preview en het results panel altijd dezelfde staat tonen. Daarnaast wil ik tekst die op een figuur staat apart kunnen zien, selecteren en excluderen. Wanneer ik overlay-tekst exclude, wordt de figuur automatisch geretoucheerd zodat de tekst visueel verdwijnt uit het geëxporteerde beeld.
+
+### Actors
+- Eindgebruiker
+- Systeem (automatisch: classificatie + inpainting)
+
+### Precondities
+- Er is een capture met analyse-resultaten beschikbaar (UC-4 + UC-5)
+- Overlays zijn zichtbaar in de preview (UC-5a)
+- LaMa ONNX model is beschikbaar in Resources
+
+### Flow
+1. Na analyse worden overlays getoond op de preview
+2. Tekst-overlays zijn geclassificeerd als **page text** (blauw) of **overlay text** (oranje, op figuur)
+3. Overlay-tekst wordt visueel gegroepeerd onder de bijbehorende figuur in het results panel
+4. Gebruiker kan elke overlay (tekst of figuur) excluderen via:
+   - Eye icon in de preview (na selectie)
+   - Toggle in het results panel
+   - Beide zijn gesynchroniseerd
+5. Bij exclude van **overlay-tekst op een figuur**:
+   a. Systeem genereert een binary mask van de tekst-bounds
+   b. LaMa inpainting verwijdert de tekst uit de figuur-afbeelding
+   c. Figuur wordt opnieuw geëxtraheerd met geretoucheerde afbeelding
+6. Bij include (undo exclude): originele figuur wordt hersteld
+7. Geretoucheerde figuur is zichtbaar in preview en results panel
+
+### Deelstappen
+
+#### Deelstap 1: Unified Exclusion State
+Eén exclusion-mechanisme (`OverlayItem.isExcluded`) als single source of truth voor preview en results panel.
+
+#### Deelstap 2: Overlay-tekst Classificatie & UI
+Tekst op figuren visueel onderscheiden, koppelen aan de bijbehorende figuur, en apart excludeerbaar maken.
+
+#### Deelstap 3: LaMa Inpainting Pipeline
+Wanneer overlay-tekst wordt geëxcludeerd, de figuur retoucheren met LaMa om de tekst visueel te verwijderen.
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| Unified exclusion state | `PRODUCTIE` | `OverlayItem.isExcluded` als single source of truth, `DetectedFigure.isSelected` afgeleid |
+| ResultsPanel toggle sync | `PRODUCTIE` | Toggle stuurt `onToggleExclusion` aan, niet `onToggleFigure` |
+| `TextOverlayClassification` op OverlayItem | `PRODUCTIE` | Hergebruikt bestaande `OverlayTextAnalyzer` classificatie |
+| `associatedFigureOverlayId` op OverlayItem | `PRODUCTIE` | Koppelt overlay-tekst aan de figuur waarop het staat |
+| Visueel onderscheid overlay-tekst (oranje) | `PRODUCTIE` | Ander kleur + label "Text on Figure" |
+| ResultsPanel: overlay-tekst onder figuur tonen | `PRODUCTIE` | Gegroepeerde weergave per figuur |
+| `TextMaskGenerator` | `PRODUCTIE` | OCR bounds → binary mask voor inpainting input |
+| `LaMaInpainter` | `PRODUCTIE` | ONNX Runtime, 512×512 fixed input, CoreML EP |
+| `FigureInpaintingPipeline` | `PRODUCTIE` | Mask → crop → resize → inpaint → composite |
+| Origineel-herstel bij undo exclude | `PRODUCTIE` | Originele extractedImage bewaren voor rollback |
+| Graceful degradation bij model-falen | `PRODUCTIE` | Figuur ongewijzigd als inpainting faalt |
+
+### Acceptatiecriteria
+
+**Deelstap 1 — Unified Exclusion**
+- [x] Exclude via preview eye icon reflecteert direct in ResultsPanel toggle
+- [x] Exclude via ResultsPanel toggle reflecteert direct in preview overlay
+- [x] Slechts één exclusion-mechanisme (`OverlayItem.isExcluded`), niet twee
+- [x] Export (`selectedFigures`) respecteert overlay exclusion state
+- [x] Figuur-toggle in ResultsPanel is verwijderd of stuurt overlay exclusion aan
+
+**Deelstap 2 — Overlay-tekst Classificatie**
+- [x] Tekst-overlays op figuren hebben classificatie `overlay` of `edgeOverlay`
+- [x] Overlay-tekst is visueel onderscheiden in preview (oranje rand, label)
+- [x] Overlay-tekst wordt in ResultsPanel onder de bijbehorende figuur getoond
+- [x] Page-tekst wordt in ResultsPanel onder "Recognized Text" getoond (bestaand gedrag)
+- [x] Overlay-tekst kan apart worden geëxcludeerd
+- [x] Overlay-tekst wordt niet gegroepeerd met page-tekst door TextBlockGrouper
+
+**Deelstap 3 — LaMa Inpainting**
+- [ ] LaMa ONNX model laadt succesvol op Apple Silicon
+- [ ] Binary mask wordt correct gegenereerd uit tekst-bounds
+- [ ] Inpainting verwijdert tekst visueel uit figuur-afbeelding
+- [ ] Inpainting kwaliteit is hoog (geen zichtbare artefacten bij uniforme achtergronden)
+- [ ] Geretoucheerde figuur is zichtbaar in preview en results panel
+- [ ] Bij undo exclude (re-include): originele figuur wordt hersteld
+- [ ] Bij inpainting-falen: figuur blijft ongewijzigd, gebruiker krijgt melding
+- [ ] Inpainting duurt <2 seconden per figuur op Apple Silicon
+- [ ] Model werkt op CPU als CoreML EP niet beschikbaar is
+
+### Testcases — Unit (draaien overal, ook CI)
+
+**Deelstap 1: Unified Exclusion**
 | ID | Beschrijving | Verwacht resultaat |
 |----|-------------|-------------------|
-| TC-5a.11 | `buildOverlayItems` na analyse | overlayItems bevat gegroepeerde tekst + figuur items |
-| TC-5a.12 | `selectOverlay(id:)` | selectedOverlayId wijzigt, vorige deselecteert, nieuwe selecteert |
-| TC-5a.13 | `moveOverlay(id:dx:dy:)` | bounds verschuift correct, geclampt binnen 0..1 |
-| TC-5a.14 | `resizeOverlay(id:to:)` | bounds wijzigt naar nieuwe waarde, geclampt |
-| TC-5a.15 | `deleteSelectedOverlay()` | geselecteerde overlay verwijderd uit array, selectedOverlayId nil |
-| TC-5a.16 | `addManualFigureOverlay(bounds:)` | nieuw item met isManual=true, kind=.figure, wordt geselecteerd |
-| TC-5a.17 | `toggleOverlayExclusion(id:)` | isExcluded togglet, visueel doorgestreept |
-| TC-5a.18 | `reExtractFigure(for:)` | figureResult wordt bijgewerkt met nieuwe CGImage na bounds-wijziging |
-| TC-5a.19 | Coordinate conversie in InteractiveOverlayView | viewToNormalized en normalizedRect geven correcte waarden |
+| TC-5b.1 | Exclude figuur-overlay → `isExcludedFigureIndices` bevat sourceFigureIndex | Set bevat index van excluded figuur |
+| TC-5b.2 | Include figuur-overlay (toggle terug) → index verdwijnt uit set | Set is leeg |
+| TC-5b.3 | Exclude figuur-overlay → `nonExcludedFigures` filtert correct | Excluded figuur niet in resultaat |
+| TC-5b.4 | Meerdere figuren, één excluded → alleen excluded figuur gefilterd | Niet-excluded figuren behouden |
+| TC-5b.5 | Exclude + re-include round-trip | State keert correct terug naar origineel |
+
+**Deelstap 2: Overlay-tekst Classificatie**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.6 | `buildOverlayItems` met tekst op figuur → classificatie is `.overlay` of `.edgeOverlay` | textOverlayClassification is niet `.pageText` |
+| TC-5b.7 | `buildOverlayItems` met tekst naast figuur → classificatie is `.pageText` | textOverlayClassification is `.pageText` |
+| TC-5b.8 | Overlay-tekst heeft `associatedFigureOverlayId` naar juiste figuur | ID matcht figuur-overlay waarop tekst staat |
+| TC-5b.9 | Page-tekst heeft geen `associatedFigureOverlayId` | Waarde is nil |
+| TC-5b.10 | Overlay-tekst wordt niet gegroepeerd met page-tekst | Aparte overlay items |
+| TC-5b.11 | Exclude overlay-tekst → excludedTextBlockIds bevat bron-IDs | IDs van overlay-tekst blokken in set |
+| TC-5b.12 | Tekst zonder figuren → alle classificaties zijn `.pageText` | Geen overlay-tekst classificaties |
+
+**Deelstap 3: LaMa Inpainting**
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.13 | `TextMaskGenerator`: enkele tekst-bounds → mask heeft witte pixels op tekst-positie | Mask pixels zijn 255 binnen bounds, 0 buiten |
+| TC-5b.14 | `TextMaskGenerator`: meerdere tekst-bounds → union mask | Alle tekst-posities wit in mask |
+| TC-5b.15 | `TextMaskGenerator`: lege bounds → volledig zwarte mask | Geen witte pixels |
+| TC-5b.16 | `TextMaskGenerator`: bounds buiten afbeelding → geclampt, geen crash | Mask bevat alleen geldige pixels |
+| TC-5b.17 | `LaMaInpainter`: model initialiseert succesvol | Geen error, session is actief |
+| TC-5b.18 | `LaMaInpainter`: inference op 512×512 test-image + mask → output 512×512 | Output dimensies correct |
+| TC-5b.19 | `LaMaInpainter`: inpainted pixels in mask-regio wijken af van origineel | Gemiddelde pixelverschil in mask-regio > threshold |
+| TC-5b.20 | `LaMaInpainter`: pixels buiten mask-regio zijn (nagenoeg) ongewijzigd | Gemiddelde pixelverschil buiten mask < threshold |
+| TC-5b.21 | `FigureInpaintingPipeline`: crop + inpaint + composite round-trip | Output image heeft zelfde dimensies als input |
+| TC-5b.22 | `FigureInpaintingPipeline`: composite behoudt pixels buiten figuur-bounds | Pixels buiten crop-regio ongewijzigd |
+| TC-5b.23 | `FigureInpaintingPipeline`: model niet beschikbaar → graceful fallback | Retourneert originele afbeelding, geen crash |
+| TC-5b.24 | Origineel-herstel: exclude → inpaint → re-include → origineel terug | extractedImage is identiek aan pre-inpaint |
+
+### Testcases — Integration (alleen lokaal, vereist screen recording permissie)
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-5b.30 | Capture nieuwspagina met tekst op hero-foto → overlay-tekst gedetecteerd | Minimaal 1 tekst-overlay met classificatie `.overlay` |
+| TC-5b.31 | Exclude overlay-tekst → figuur preview toont retouchering | Tekst is visueel verwijderd uit figuur in ResultsPanel |
+| TC-5b.32 | Re-include overlay-tekst → figuur preview toont origineel | Tekst is weer zichtbaar in figuur |
 
 ---
 
@@ -747,7 +879,10 @@ UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                         UC-4a [DRAFT] UC-4b [DRAFT] UC-5 [DONE]
                                                                        │
                                                                        ▼
-                                                              UC-5a [APPROVED] ◄── NEXT
+                                                              UC-5a [DONE]
+                                                                       │
+                                                                       ▼
+                                                              UC-5b [APPROVED] ◄── NEXT
                                                                        │
                                               ┌────────────────────────┘
                                               ▼
@@ -757,9 +892,10 @@ UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                               UC-8 [BACKLOG] (App Store)
 ```
 
-UC-5a (interactieve overlay correctie) is de eerstvolgende prioriteit.
-UC-4a en UC-4b zijn afhankelijk van UC-4, kunnen parallel met UC-5a.
-UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-5a.
+UC-5b (unified exclusion + overlay-tekst + inpainting) is de eerstvolgende prioriteit.
+UC-5b deelstap 1-2 (exclusion + classificatie) vereist UC-5a. Deelstap 3 (LaMa) vereist deelstap 2.
+UC-4a en UC-4b zijn afhankelijk van UC-4, kunnen parallel met UC-5b.
+UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-5b.
 
 ---
 
@@ -858,3 +994,23 @@ Meerdere gerelateerde problemen bij figuurdetectie op nieuwspagina's:
 - Bovenfoto bounds height: 0.209 → 0.263
 - Onderfoto bounds height: 0.210 → 0.269
 - 214 tests, 214 passed, 87.8% coverage
+
+### BUG-2: Tekst-overlay resize update niet sourceTextBlockIds
+
+**Status:** `FIXED`
+**Gevonden:** 2026-03-15
+**Opgelost:** 2026-03-15
+**Component:** OverlayInteractionController
+
+**Beschrijving:**
+Bij het resizen of verplaatsen van een tekst-overlay in de preview werden de geassocieerde tekstblokken (`sourceTextBlockIds`) niet bijgewerkt. Hierdoor bleef de tekst in het ResultsPanel ongewijzigd ondanks dat de overlay-bounds waren veranderd.
+
+**Oorzaak:**
+`sourceTextBlockIds` was `let` (immutable) en werd alleen bij `buildOverlayItems()` gezet. Na resize/move vond geen re-associatie plaats.
+
+**Oplossing:**
+- `sourceTextBlockIds` gewijzigd naar `var`
+- `textBlocksSwiftUI` opgeslagen in controller bij build-time
+- `reassociateTextBlocks(at:)` toegevoegd: herberekent associatie op basis van ≥50% spatiale overlap
+- Aangeroepen na elke `moveOverlay` en `resizeOverlay` voor tekst-overlays
+- 2 regressietests (BUG-2a: resize, BUG-2b: move)

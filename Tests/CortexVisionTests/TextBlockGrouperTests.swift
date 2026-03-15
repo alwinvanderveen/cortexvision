@@ -60,7 +60,7 @@ struct TextBlockGrouperTests {
 
     @Test("Empty input produces empty output", .tags(.core))
     func emptyInput() {
-        let result = grouper.group([])
+        let result = grouper.group([] as [(text: String, bounds: CGRect)])
         #expect(result.isEmpty)
     }
 

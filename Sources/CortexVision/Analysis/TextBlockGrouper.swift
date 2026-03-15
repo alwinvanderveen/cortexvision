@@ -29,6 +29,19 @@ public struct TextBlockGrouper {
     /// - Parameter textBlocks: OCR text blocks with bounds in Vision coordinates (bottom-left origin).
     /// - Returns: Grouped overlay items with bounds in SwiftUI coordinates (top-left origin).
     public func group(_ textBlocks: [(text: String, bounds: CGRect)]) -> [OverlayItem] {
+        let withIds = textBlocks.map { (id: UUID(), text: $0.text, bounds: $0.bounds) }
+        return groupWithIds(withIds)
+    }
+
+    /// Groups text blocks into logical regions, preserving source TextBlock IDs.
+    ///
+    /// - Parameter textBlocks: OCR text blocks with IDs and bounds in Vision coordinates (bottom-left origin).
+    /// - Returns: Grouped overlay items with `sourceTextBlockIds` populated.
+    public func group(_ textBlocks: [(id: UUID, text: String, bounds: CGRect)]) -> [OverlayItem] {
+        groupWithIds(textBlocks)
+    }
+
+    private func groupWithIds(_ textBlocks: [(id: UUID, text: String, bounds: CGRect)]) -> [OverlayItem] {
         guard !textBlocks.isEmpty else { return [] }
 
         // Sort by Y descending (top of page first in Vision coords = highest Y)
@@ -116,7 +129,8 @@ public struct TextBlockGrouper {
             return OverlayItem(
                 bounds: swiftuiBounds,
                 kind: .text,
-                label: previewLabel
+                label: previewLabel,
+                sourceTextBlockIds: members.map(\.id)
             )
         }
         .sorted { $0.bounds.origin.y < $1.bounds.origin.y } // top-to-bottom in SwiftUI

@@ -154,7 +154,12 @@ private struct InteractiveOverlayBox: View {
 
     private var baseColor: Color {
         switch item.kind {
-        case .text: return .blue
+        case .text:
+            // Overlay-text on figures gets orange, page-text gets blue
+            if let cls = item.textOverlayClassification, cls == .overlay || cls == .edgeOverlay {
+                return .orange
+            }
+            return .blue
         case .figure: return .green
         }
     }

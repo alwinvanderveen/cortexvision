@@ -781,5 +781,338 @@
     "input": "Image/testEdgesDenHaagDoet.png (1926x742 PNG with hero photo + text below)",
     "expectedOutput": "1 figure: width >95%, aspect >4:1, <2% white edges",
     "tags": ["figures", "verification"]
+  },
+  "buildOverlayItems produces grouped text + figure items": {
+    "id": "TC-5a.11a",
+    "category": "Core",
+    "functional": "After analysis, overlay items contain grouped text blocks and Y-flipped figure overlays",
+    "technical": "OverlayInteractionController.buildOverlayItems groups text via TextBlockGrouper and creates figure items with Vision→SwiftUI Y-flip",
+    "input": "2 nearby text blocks + 1 figure in Vision coordinates",
+    "expectedOutput": "Text grouped into fewer overlays than input, 1 figure with correct Y-flip, selection cleared",
+    "tags": ["core"]
+  },
+  "buildOverlayItems with empty input produces empty array": {
+    "id": "TC-5a.11b",
+    "category": "Core",
+    "functional": "No overlays are created when there are no analysis results",
+    "technical": "OverlayInteractionController.buildOverlayItems with empty text and figures returns empty array",
+    "input": "Empty text blocks and figures arrays",
+    "expectedOutput": "overlayItems is empty",
+    "tags": ["core"]
+  },
+  "buildOverlayItems with only figures produces figure-only items": {
+    "id": "TC-5a.11c",
+    "category": "Core",
+    "functional": "Overlays contain only figure items when no text was detected",
+    "technical": "OverlayInteractionController.buildOverlayItems with empty text and 2 figures produces 2 figure overlays with correct sourceFigureIndex",
+    "input": "Empty text blocks, 2 figures",
+    "expectedOutput": "2 figure overlay items, both with kind=.figure and correct indices",
+    "tags": ["core"]
+  },
+  "selectOverlay selects new and deselects previous": {
+    "id": "TC-5a.12",
+    "category": "Core",
+    "functional": "Clicking an overlay selects it and deselects any previously selected overlay",
+    "technical": "OverlayInteractionController.selectOverlay(id:) sets isSelected on new, clears on previous, nil deselects all",
+    "input": "2 figure overlays, sequential select calls",
+    "expectedOutput": "Only one overlay selected at a time, nil deselects all",
+    "tags": ["core"]
+  },
+  "moveOverlay shifts bounds correctly, clamped within 0..1": {
+    "id": "TC-5a.13",
+    "category": "Core",
+    "functional": "Dragging an overlay moves it, preventing it from leaving the image bounds",
+    "technical": "OverlayInteractionController.moveOverlay(id:dx:dy:) shifts bounds by delta, clamped to 0..1",
+    "input": "1 figure overlay, normal move + extreme move beyond edge",
+    "expectedOutput": "Bounds shift correctly, clamped within 0..1 range",
+    "tags": ["core"]
+  },
+  "resizeOverlay changes bounds, clamped within 0..1": {
+    "id": "TC-5a.14",
+    "category": "Core",
+    "functional": "Resizing an overlay via handle changes its size, preventing overflow",
+    "technical": "OverlayInteractionController.resizeOverlay(id:to:) sets new bounds, clamped to 0..1",
+    "input": "1 figure overlay, normal resize + resize beyond edge",
+    "expectedOutput": "Bounds change correctly, clamped within 0..1",
+    "tags": ["core"]
+  },
+  "deleteSelectedOverlay removes selected item and nils selectedOverlayId": {
+    "id": "TC-5a.15a",
+    "category": "Core",
+    "functional": "Pressing Delete removes the selected overlay",
+    "technical": "OverlayInteractionController.deleteSelectedOverlay() removes item from array and sets selectedOverlayId to nil",
+    "input": "2 figure overlays, select first then delete",
+    "expectedOutput": "Array count reduced by 1, selectedOverlayId is nil, deleted item not in array",
+    "tags": ["core"]
+  },
+  "deleteSelectedOverlay with no selection does nothing": {
+    "id": "TC-5a.15b",
+    "category": "Core",
+    "functional": "Delete operation is safe when nothing is selected",
+    "technical": "OverlayInteractionController.deleteSelectedOverlay() with no selection leaves array unchanged",
+    "input": "1 figure overlay, no selection",
+    "expectedOutput": "Array count unchanged",
+    "tags": ["core"]
+  },
+  "addManualFigureOverlay creates manual figure and selects it": {
+    "id": "TC-5a.16a",
+    "category": "Core",
+    "functional": "Drawing a new figure overlay on empty space creates it and selects it",
+    "technical": "OverlayInteractionController.addManualFigureOverlay(bounds:) appends item with isManual=true, kind=.figure, auto-labeled, and auto-selected",
+    "input": "1 existing figure, add manual figure at bounds (0.5, 0.4, 0.3, 0.2)",
+    "expectedOutput": "New item: isManual=true, kind=.figure, label='Figure 2', isSelected=true",
+    "tags": ["core"]
+  },
+  "addManualFigureOverlay auto-numbers correctly with mixed kinds": {
+    "id": "TC-5a.16b",
+    "category": "Core",
+    "functional": "Manual figure numbering counts only figure overlays, not text overlays",
+    "technical": "OverlayInteractionController.addManualFigureOverlay counts existing .figure items for label numbering",
+    "input": "1 text overlay + 2 figure overlays, add manual figure",
+    "expectedOutput": "New manual figure labeled 'Figure 3'",
+    "tags": ["core"]
+  },
+  "toggleOverlayExclusion toggles isExcluded flag": {
+    "id": "TC-5a.17a",
+    "category": "Core",
+    "functional": "Toggling exclusion marks an overlay as excluded from export, toggling again re-includes it",
+    "technical": "OverlayInteractionController.toggleOverlayExclusion(id:) toggles isExcluded between true and false",
+    "input": "1 text overlay, toggle twice",
+    "expectedOutput": "false → true → false",
+    "tags": ["core"]
+  },
+  "toggleOverlayExclusion with unknown ID does nothing": {
+    "id": "TC-5a.17b",
+    "category": "Core",
+    "functional": "Toggling exclusion with a non-existent ID is a safe no-op",
+    "technical": "OverlayInteractionController.toggleOverlayExclusion(id:) with random UUID leaves all items unchanged",
+    "input": "1 figure overlay, toggle with random UUID",
+    "expectedOutput": "isExcluded remains false",
+    "tags": ["core"]
+  },
+  "reExtractFigure produces cropped image and updates figures": {
+    "id": "TC-5a.18a",
+    "category": "Core",
+    "functional": "After moving/resizing a figure overlay, re-extraction produces a new cropped image",
+    "technical": "OverlayInteractionController.reExtractFigure crops image from overlay bounds and returns updated DetectedFigure with new extractedImage",
+    "input": "200x200 test image, 1 figure overlay moved by (0.1, 0.05)",
+    "expectedOutput": "Non-nil result with cropped CGImage and updated figures array",
+    "tags": ["core"]
+  },
+  "reExtractFigure for manual overlay returns cropped but no updated figures": {
+    "id": "TC-5a.18b",
+    "category": "Core",
+    "functional": "Re-extraction works for manually drawn figures but does not update the detection results",
+    "technical": "OverlayInteractionController.reExtractFigure for manual overlay (no sourceFigureIndex) returns cropped image but updatedFigures=nil",
+    "input": "200x200 test image, 1 manual figure overlay",
+    "expectedOutput": "Non-nil result with cropped image, updatedFigures is nil",
+    "tags": ["core"]
+  },
+  "reExtractFigure for text overlay returns nil": {
+    "id": "TC-5a.18c",
+    "category": "Core",
+    "functional": "Re-extraction is not applicable to text overlays",
+    "technical": "OverlayInteractionController.reExtractFigure for text overlay returns nil",
+    "input": "200x200 test image, 1 text overlay",
+    "expectedOutput": "nil (text overlays cannot be re-extracted)",
+    "tags": ["core"]
+  },
+  "OverlayItem pixelRect converts normalized to pixel coords correctly": {
+    "id": "TC-5a.19a",
+    "category": "Core",
+    "functional": "Overlay positions are correctly converted from normalized to pixel coordinates for rendering",
+    "technical": "OverlayItem.pixelRect(for:) multiplies normalized bounds by image dimensions",
+    "input": "Overlay at (0.25, 0.5, 0.5, 0.25), image 1000x800",
+    "expectedOutput": "Pixel rect (250, 400, 500, 200)",
+    "tags": ["core"]
+  },
+  "OverlayItem normalizedBounds converts pixel to normalized coords": {
+    "id": "TC-5a.19b",
+    "category": "Core",
+    "functional": "Pixel coordinates are correctly converted back to normalized bounds",
+    "technical": "OverlayItem.normalizedBounds(from:imageSize:) divides pixel rect by image dimensions",
+    "input": "Pixel rect (250, 400, 500, 200), image 1000x800",
+    "expectedOutput": "Normalized bounds (0.25, 0.5, 0.5, 0.25)",
+    "tags": ["core"]
+  },
+  "OverlayItem normalizedBounds with zero image size returns zero": {
+    "id": "TC-5a.19c",
+    "category": "Core",
+    "functional": "Coordinate conversion handles edge case of zero-size image gracefully",
+    "technical": "OverlayItem.normalizedBounds(from:imageSize:) returns .zero when image size is zero",
+    "input": "Any pixel rect, image size .zero",
+    "expectedOutput": "CGRect.zero",
+    "tags": ["core"]
+  },
+  "Round-trip: normalized → pixel → normalized preserves bounds": {
+    "id": "TC-5a.19d",
+    "category": "Core",
+    "functional": "Converting coordinates back and forth does not lose precision",
+    "technical": "OverlayItem.pixelRect → normalizedBounds round-trip preserves original bounds within tolerance",
+    "input": "Overlay at (0.15, 0.25, 0.6, 0.35), image 1920x1080",
+    "expectedOutput": "Restored bounds match original within 0.001 tolerance",
+    "tags": ["core"]
+  },
+  "sourceTextBlockIds are populated for text overlays": {
+    "id": "TC-5a.20a",
+    "category": "Core",
+    "functional": "Text overlays track which source OCR blocks they contain for exclusion filtering",
+    "technical": "OverlayInteractionController.buildOverlayItems populates sourceTextBlockIds on text overlay items via TextBlockGrouper",
+    "input": "2 text blocks with known UUIDs",
+    "expectedOutput": "All source UUIDs present in overlay items' sourceTextBlockIds",
+    "tags": ["core"]
+  },
+  "excludedTextBlockIds returns IDs of blocks in excluded text overlays": {
+    "id": "TC-5a.20b",
+    "category": "Core",
+    "functional": "Excluding a text overlay identifies which OCR blocks should be hidden from results and copy",
+    "technical": "OverlayInteractionController.excludedTextBlockIds returns source block IDs from excluded text overlays only",
+    "input": "3 text blocks in 2 groups, exclude one group",
+    "expectedOutput": "Excluded group's block IDs in set, other group's block ID not in set",
+    "tags": ["core"]
+  },
+  "excludedTextBlockIds is empty for figure-only exclusions": {
+    "id": "TC-5a.20c",
+    "category": "Core",
+    "functional": "Excluding a figure overlay does not affect text block filtering",
+    "technical": "OverlayInteractionController.excludedTextBlockIds is empty when only figure overlays are excluded",
+    "input": "1 text overlay + 1 figure overlay, exclude figure",
+    "expectedOutput": "excludedTextBlockIds is empty",
+    "tags": ["core"]
+  },
+  "TextBlockGrouper preserves IDs through grouping with ID overload": {
+    "id": "TC-5a.20d",
+    "category": "Core",
+    "functional": "TextBlockGrouper correctly passes source block IDs through the grouping process",
+    "technical": "TextBlockGrouper.group with ID tuples populates sourceTextBlockIds on result OverlayItems",
+    "input": "2 text blocks with known UUIDs, close together (will group)",
+    "expectedOutput": "Both UUIDs present in grouped overlay's sourceTextBlockIds",
+    "tags": ["core"]
+  },
+  "TC-5b.1: Exclude figure overlay → excludedFigureIndices contains sourceFigureIndex": {
+    "id": "TC-5b.1",
+    "category": "Core",
+    "functional": "Excluding a figure overlay marks its source index as excluded for export filtering",
+    "technical": "OverlayInteractionController.excludedFigureIndices contains sourceFigureIndex of excluded figure overlay",
+    "input": "2 figure overlays, exclude first",
+    "expectedOutput": "excludedFigureIndices contains 0, not 1",
+    "tags": ["core"]
+  },
+  "TC-5b.2: Re-include figure overlay → index removed from excludedFigureIndices": {
+    "id": "TC-5b.2",
+    "category": "Core",
+    "functional": "Re-including a previously excluded figure restores it for export",
+    "technical": "OverlayInteractionController.excludedFigureIndices is empty after toggle back",
+    "input": "1 figure overlay, exclude then re-include",
+    "expectedOutput": "excludedFigureIndices is empty after second toggle",
+    "tags": ["core"]
+  },
+  "TC-5b.3: syncedFigures filters excluded figures correctly": {
+    "id": "TC-5b.3",
+    "category": "Core",
+    "functional": "Export selection state reflects overlay exclusion: excluded figures have isSelected=false",
+    "technical": "OverlayInteractionController.syncedFigures returns figures with isSelected adjusted based on excludedFigureIndices",
+    "input": "2 figures, exclude first",
+    "expectedOutput": "First figure isSelected=false, second isSelected=true",
+    "tags": ["core"]
+  },
+  "TC-5b.4: Multiple figures, one excluded → only excluded is filtered": {
+    "id": "TC-5b.4",
+    "category": "Core",
+    "functional": "Only the specifically excluded figure is affected, others remain included",
+    "technical": "OverlayInteractionController.syncedFigures with 3 figures, middle excluded",
+    "input": "3 figures, exclude middle (index 1)",
+    "expectedOutput": "Figure 0 and 2 isSelected=true, figure 1 isSelected=false",
+    "tags": ["core"]
+  },
+  "TC-5b.5: Exclude + re-include round-trip restores original state": {
+    "id": "TC-5b.5",
+    "category": "Core",
+    "functional": "Toggling exclusion twice returns to the original included state",
+    "technical": "OverlayInteractionController: exclude → syncedFigures shows false → re-include → syncedFigures shows true",
+    "input": "1 figure, toggle exclude twice",
+    "expectedOutput": "isSelected true → false → true, excludedFigureIndices empty at end",
+    "tags": ["core"]
+  },
+  "Resize text overlay updates sourceTextBlockIds based on spatial overlap": {
+    "id": "BUG-2a",
+    "category": "Core",
+    "functional": "After resizing a text overlay, the associated text blocks update to match the new bounds",
+    "technical": "OverlayInteractionController.resizeOverlay triggers reassociateTextBlocks, updating sourceTextBlockIds based on ≥50% spatial intersection",
+    "input": "3 text overlays, resize first to cover first + second block areas",
+    "expectedOutput": "sourceTextBlockIds contains blocks 1+2, not block 3",
+    "tags": ["core"]
+  },
+  "Move text overlay updates sourceTextBlockIds": {
+    "id": "BUG-2b",
+    "category": "Core",
+    "functional": "After moving a text overlay, the associated text blocks update to match the new position",
+    "technical": "OverlayInteractionController.moveOverlay triggers reassociateTextBlocks for text overlays",
+    "input": "2 far-apart text overlays, move first to cover second's area",
+    "expectedOutput": "sourceTextBlockIds now contains block 2, no longer contains block 1",
+    "tags": ["core"]
+  },
+  "TC-5b.6: buildOverlayItems with overlay classification → text gets overlay classification": {
+    "id": "TC-5b.6",
+    "category": "Core",
+    "functional": "Text on a figure is classified as overlay-text and gets the correct classification",
+    "technical": "OverlayInteractionController.buildOverlayItems with textClassifications sets textOverlayClassification on overlay text items",
+    "input": "1 text block classified as .overlay on figure index 0",
+    "expectedOutput": "Text overlay item has textOverlayClassification == .overlay",
+    "tags": ["core"]
+  },
+  "TC-5b.7: buildOverlayItems with pageText classification → text gets pageText": {
+    "id": "TC-5b.7",
+    "category": "Core",
+    "functional": "Text not on a figure is treated as normal page text with no classification",
+    "technical": "OverlayInteractionController.buildOverlayItems without classification for a text block leaves textOverlayClassification nil",
+    "input": "1 text block without classification, 1 figure",
+    "expectedOutput": "Text overlay item has textOverlayClassification == nil",
+    "tags": ["core"]
+  },
+  "TC-5b.8: Overlay-text has associatedFigureOverlayId linked to correct figure": {
+    "id": "TC-5b.8",
+    "category": "Core",
+    "functional": "Overlay-text is linked to the figure it sits on for grouped display",
+    "technical": "OverlayInteractionController.buildOverlayItems sets associatedFigureOverlayId to the figure overlay's UUID",
+    "input": "1 overlay text block on figure index 1 (of 2 figures)",
+    "expectedOutput": "associatedFigureOverlayId matches figure 2's overlay UUID",
+    "tags": ["core"]
+  },
+  "TC-5b.9: Page-text has no associatedFigureOverlayId": {
+    "id": "TC-5b.9",
+    "category": "Core",
+    "functional": "Regular page text is not linked to any figure",
+    "technical": "OverlayInteractionController.buildOverlayItems leaves associatedFigureOverlayId nil for unclassified text",
+    "input": "1 page text block, 1 figure",
+    "expectedOutput": "associatedFigureOverlayId is nil",
+    "tags": ["core"]
+  },
+  "TC-5b.10: Overlay-text is not grouped with page-text": {
+    "id": "TC-5b.10",
+    "category": "Core",
+    "functional": "Text on a figure remains a separate overlay even when spatially close to page text",
+    "technical": "OverlayInteractionController.buildOverlayItems separates overlay-text from page-text before grouping",
+    "input": "2 close text blocks, 1 classified as overlay, 1 as page text",
+    "expectedOutput": "Two separate overlay items with different IDs and classifications",
+    "tags": ["core"]
+  },
+  "TC-5b.11: Exclude overlay-text → excludedTextBlockIds contains its source IDs": {
+    "id": "TC-5b.11",
+    "category": "Core",
+    "functional": "Excluding overlay-text marks its source blocks as excluded",
+    "technical": "OverlayInteractionController.toggleOverlayExclusion on overlay-text adds its sourceTextBlockIds to excludedTextBlockIds",
+    "input": "1 overlay text + 1 page text, exclude overlay text",
+    "expectedOutput": "excludedTextBlockIds contains overlay block ID, not page block ID",
+    "tags": ["core"]
+  },
+  "TC-5b.12: Text without figures → all classifications are nil (pageText)": {
+    "id": "TC-5b.12",
+    "category": "Core",
+    "functional": "Without figures, all text blocks are plain page text",
+    "technical": "OverlayInteractionController.buildOverlayItems without figures produces text overlays with nil classification",
+    "input": "2 text blocks, no figures",
+    "expectedOutput": "All text overlays have textOverlayClassification == nil and associatedFigureOverlayId == nil",
+    "tags": ["core"]
   }
 }

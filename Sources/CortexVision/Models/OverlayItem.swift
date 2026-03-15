@@ -22,6 +22,13 @@ public struct OverlayItem: Identifiable, Equatable {
     public var isExcluded: Bool
     /// Whether this overlay was added manually by the user (vs. auto-detected).
     public let isManual: Bool
+    /// IDs of the source TextBlocks that were grouped into this overlay (text overlays only).
+    /// Updated when the overlay is resized to reflect spatial re-association.
+    public var sourceTextBlockIds: [UUID]
+    /// For text overlays: classification relative to a figure (overlay, edgeOverlay, pageText, uncertain).
+    public let textOverlayClassification: TextOverlayClassification?
+    /// For overlay-text: the ID of the figure overlay this text sits on.
+    public var associatedFigureOverlayId: UUID?
 
     public init(
         id: UUID = UUID(),
@@ -31,7 +38,10 @@ public struct OverlayItem: Identifiable, Equatable {
         isSelected: Bool = false,
         isExcluded: Bool = false,
         sourceFigureIndex: Int? = nil,
-        isManual: Bool = false
+        isManual: Bool = false,
+        sourceTextBlockIds: [UUID] = [],
+        textOverlayClassification: TextOverlayClassification? = nil,
+        associatedFigureOverlayId: UUID? = nil
     ) {
         self.id = id
         self.bounds = bounds
@@ -41,6 +51,9 @@ public struct OverlayItem: Identifiable, Equatable {
         self.isExcluded = isExcluded
         self.sourceFigureIndex = sourceFigureIndex
         self.isManual = isManual
+        self.textOverlayClassification = textOverlayClassification
+        self.associatedFigureOverlayId = associatedFigureOverlayId
+        self.sourceTextBlockIds = sourceTextBlockIds
     }
 
     /// Clamps bounds to the valid range 0..1.

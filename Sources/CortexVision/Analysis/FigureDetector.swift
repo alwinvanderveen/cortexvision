@@ -2088,7 +2088,7 @@ public final class FigureDetector: Sendable {
     /// Uses median of 8 patches (4 corners + 4 edge midpoints) to be robust
     /// against patches contaminated by figure content.
     /// Works on any background color: white, gray, dark, cream, etc.
-    static func sampleBackgroundColor(
+    public static func sampleBackgroundColor(
         ptr: UnsafePointer<UInt8>, width: Int, height: Int
     ) -> (r: Double, g: Double, b: Double) {
         let patchSize = min(8, min(width, height) / 4)

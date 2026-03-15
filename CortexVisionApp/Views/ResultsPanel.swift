@@ -5,8 +5,11 @@ struct ResultsPanel: View {
     let captureState: CaptureState
     let ocrResult: OCRResult?
     let figureResult: FigureDetectionResult?
-    var excludedTextOverlayIds: Set<UUID> = []
-    var onToggleFigure: ((Int) -> Void)?
+    var includedTextBlockIds: Set<UUID>?
+    var excludedFigureIndices: Set<Int> = []
+    var overlayTextItems: [OverlayItem] = []
+    var figureOverlayIds: [Int: UUID] = [:]  // figureIndex → overlay UUID
+    var onToggleFigureExclusion: ((Int) -> Void)?
 
     @State private var selectedFigureForZoom: DetectedFigure?
 
@@ -106,8 +109,10 @@ struct ResultsPanel: View {
                 HStack {
                     Spacer()
                     Button {
+                        let blocks = visibleTextBlocks(from: result)
+                        let text = blocks.map(\.text).joined(separator: "\n")
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(result.fullText, forType: .string)
+                        NSPasteboard.general.setString(text, forType: .string)
                     } label: {
                         Label("Copy Text", systemImage: "doc.on.doc")
                     }
@@ -120,21 +125,30 @@ struct ResultsPanel: View {
 
     // MARK: - Text Section
 
+    /// Returns text blocks that are covered by a non-excluded text overlay.
+    /// If includedTextBlockIds is nil (no overlays built yet), shows all blocks.
+    private func visibleTextBlocks(from result: OCRResult) -> [TextBlock] {
+        guard let included = includedTextBlockIds else { return result.textBlocks }
+        return result.textBlocks.filter { included.contains($0.id) }
+    }
+
     private func textSection(_ result: OCRResult) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let visible = visibleTextBlocks(from: result)
+        let wordCount = visible.reduce(0) { $0 + $1.words.count }
+        return VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Image(systemName: "doc.text")
                     .foregroundStyle(.blue)
                 Text("Recognized Text")
                     .font(.headline)
                 Spacer()
-                Text("\(result.wordCount) words")
+                Text("\(wordCount) words")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
             .padding(.horizontal, 4)
 
-            ForEach(result.textBlocks) { block in
+            ForEach(visible) { block in
                 textBlockView(block)
             }
         }
@@ -158,12 +172,39 @@ struct ResultsPanel: View {
 
             ForEach(Array(result.figures.enumerated()), id: \.element.id) { index, figure in
                 figureRow(figure, index: index)
+
+                // Show overlay-text associated with this figure
+                let figOverlayId = figureOverlayIds[index]
+                let figureOverlayTexts = overlayTextItems.filter { $0.associatedFigureOverlayId == figOverlayId }
+                if !figureOverlayTexts.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 4) {
+                            Image(systemName: "text.below.photo")
+                                .foregroundStyle(.orange)
+                                .font(.caption)
+                            Text("Text on Figure")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.leading, 8)
+
+                        ForEach(figureOverlayTexts) { item in
+                            Text(item.label ?? "")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8)
+                                .opacity(item.isExcluded ? 0.35 : 1.0)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
             }
         }
     }
 
     private func figureRow(_ figure: DetectedFigure, index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        let isExcluded = excludedFigureIndices.contains(index)
+        return VStack(alignment: .leading, spacing: 8) {
             // Header: label, size info, toggle
             HStack {
                 Text(figure.label)
@@ -178,14 +219,14 @@ struct ResultsPanel: View {
 
                 Spacer()
 
-                // Selection toggle
+                // Exclusion toggle (unified with preview eye icon)
                 Toggle("", isOn: Binding(
-                    get: { figure.isSelected },
-                    set: { _ in onToggleFigure?(index) }
+                    get: { !isExcluded },
+                    set: { _ in onToggleFigureExclusion?(index) }
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
-                .help(figure.isSelected ? "Deselect for export" : "Select for export")
+                .help(isExcluded ? "Include in export" : "Exclude from export")
             }
 
             // Large preview image — click to zoom
@@ -223,13 +264,14 @@ struct ResultsPanel: View {
             }
         }
         .padding(8)
+        .opacity(isExcluded ? 0.5 : 1.0)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(figure.isSelected ? Color.green.opacity(0.05) : Color.clear)
+                .fill(!isExcluded ? Color.green.opacity(0.05) : Color.clear)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(figure.isSelected ? Color.green.opacity(0.2) : Color.gray.opacity(0.1), lineWidth: 1)
+                .strokeBorder(!isExcluded ? Color.green.opacity(0.2) : Color.gray.opacity(0.1), lineWidth: 1)
         )
     }
 
