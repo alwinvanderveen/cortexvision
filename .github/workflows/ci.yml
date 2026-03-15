@@ -18,6 +18,9 @@ jobs:
         with:
           lfs: true
 
+      - name: Ensure LFS files are checked out
+        run: git lfs pull
+
       - name: Show toolchain info
         run: |
           swift --version
