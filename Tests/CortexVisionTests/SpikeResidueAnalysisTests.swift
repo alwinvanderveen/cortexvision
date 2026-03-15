@@ -131,7 +131,8 @@ struct SpikeResidueAnalysisTests {
 
     // MARK: - TC-5b.S1 + S2: Spike test on real image
 
-    @Test("Spike: pass 1 makes overlay regions more uniform and separable", .tags(.figures))
+    @Test("Spike: pass 1 makes overlay regions more uniform and separable", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
     func spikePass1EnablesResidueAnalysis() async throws {
         guard let image = loadTestImage("testMultipleImageNews2") else {
             Issue.record("Could not load testMultipleImageNews2.png")

@@ -51,7 +51,8 @@ struct InpaintingDebugTests {
 
     // MARK: - Direct LaMa test with pixel-level mask
 
-    @Test("LaMa: orientation preserved (green marker stays at top-left)", .tags(.figures))
+    @Test("LaMa: orientation preserved (green marker stays at top-left)", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
     func lamaOrientationPreserved() throws {
         let inpainter = try LaMaInpainter()
         let size = 512
@@ -109,7 +110,8 @@ struct InpaintingDebugTests {
         #expect(resultBottomRight.g < 100, "Output bottom-right should NOT be green: \(resultBottomRight)")
     }
 
-    @Test("LaMa: black text rectangle is inpainted with background color", .tags(.figures))
+    @Test("LaMa: black text rectangle is inpainted with background color", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
     func lamaTextInpainted() throws {
         let inpainter = try LaMaInpainter()
         let size = 512
@@ -157,7 +159,8 @@ struct InpaintingDebugTests {
         #expect(brightness > 40, "Inpainted center should not be black: brightness=\(brightness)")
     }
 
-    @Test("Pipeline: full removeText preserves orientation and removes text", .tags(.figures))
+    @Test("Pipeline: full removeText preserves orientation and removes text", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
     func pipelineFullTest() throws {
         guard let pipeline = FigureInpaintingPipeline() else {
             Issue.record("LaMa model not available")
@@ -224,7 +227,8 @@ struct InpaintingDebugTests {
         return cgImage
     }
 
-    @Test("Real image: testMultipleImageNews2 — OCR + figure detect + inpaint removes overlay text", .tags(.figures))
+    @Test("Real image: testMultipleImageNews2 — OCR + figure detect + inpaint removes overlay text", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
     func realImageInpaintNews2() async throws {
         guard let image = loadTestImage("testMultipleImageNews2") else {
             Issue.record("Could not load testMultipleImageNews2.png")
