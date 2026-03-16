@@ -5,31 +5,64 @@ import Foundation
 public struct CandidateBlob: Equatable {
     /// Pixel-level bounding box in the figure crop (top-left origin).
     public let bounds: CGRect
-    /// Number of high-saturation pixels in this blob.
+    /// Exact pixel support of the detected component in top-left image coordinates.
+    public let pixelIndices: [Int]
+    /// Number of pixels in the component support.
     public let pixelCount: Int
-    /// Compactness: pixelCount / bounding box area. Solid UI elements > 0.4.
+    /// Dilation radius applied when the component is merged into the pass-2 support mask.
+    public let dilationRadius: Int
+    /// Compactness: pixelCount / bounding-box area. Solid UI elements trend upward.
     public let compactness: Double
-    /// Internal uniformity (0..1). High = solid color, low = textured photo.
+    /// Internal uniformity (0..1). Higher means flatter color / lower texture.
     public let uniformity: Double
-    /// Boundary contrast: average color difference at blob edge vs external neighbors.
+    /// Boundary contrast: average edge difference against external neighbors.
     public let boundaryContrast: Double
     /// Fraction of the figure area this blob covers.
     public let relativeArea: Double
-    /// Whether pass-1 merged originally separate fragments into this blob (UI-element signal).
+    /// Proximity of the candidate to the nearest OCR anchor within the search radius.
+    public let anchorProximity: Double
+    /// Fraction of the OCR text anchor covered by the candidate bbox.
+    public let textCoverage: Double
+    /// Whether pass 1 reduced the fragment count inside this component's bounding box.
     public let mergedAfterPass1: Bool
+    /// Relative reduction of fragment count inside the candidate bbox after pass 1.
+    public let fragmentReduction: Double
+    /// Increase in largest-component compactness inside the candidate bbox after pass 1.
+    public let compactnessGain: Double
+    /// Relative reduction of raw pixel variance inside the candidate bbox after pass 1.
+    public let varianceReduction: Double
 
-    /// Multi-signal confidence score (0..1). All signals are always evaluated.
+    /// Continuous score that describes how much pass 1 made the candidate easier to separate.
+    public var pass1DeltaScore: Double {
+        let fragmentScore = min(1, max(0, fragmentReduction))
+        let compactnessScore = min(1, max(0, compactnessGain) / 0.20)
+        let varianceScore = min(1, max(0, varianceReduction) / 0.35)
+        return fragmentScore * 0.45 + compactnessScore * 0.30 + varianceScore * 0.25
+    }
+
+    /// Multi-signal confidence score (0..1).
     public var confidence: Double {
-        let totalWeight = 6.0
-        var score = 0.0
+        let compactnessScore = CandidateBlob.normalize(compactness, floor: 0.20, ceiling: 0.60)
+        let uniformityScore = CandidateBlob.normalize(uniformity, floor: 0.45, ceiling: 0.85)
+        let contrastScore = min(1, max(0, boundaryContrast / 40.0))
+        let sizeScore = relativeArea <= 0.05 ? 1.0 : max(0, 1.0 - ((relativeArea - 0.05) / 0.05))
+        let anchorScore = min(1, max(0, anchorProximity))
+        let textCoverageScore = min(1, max(0, textCoverage))
+        let mergeBonus = mergedAfterPass1 ? 1.0 : 0.0
 
-        if compactness > 0.4 { score += 1 }      // solid shape
-        if uniformity > 0.5 { score += 1 }        // solid color
-        if boundaryContrast > 15 { score += 1 }   // sharp edge against photo
-        if relativeArea < 0.05 { score += 1 }     // reasonable size for UI element
-        if mergedAfterPass1 { score += 2 }         // fragments merged = structural UI confirmation (2×)
+        return compactnessScore * 0.18
+            + uniformityScore * 0.08
+            + contrastScore * 0.06
+            + sizeScore * 0.08
+            + anchorScore * 0.28
+            + textCoverageScore * 0.16
+            + pass1DeltaScore * 0.10
+            + mergeBonus * 0.06
+    }
 
-        return score / totalWeight
+    private static func normalize(_ value: Double, floor: Double, ceiling: Double) -> Double {
+        guard ceiling > floor else { return value >= ceiling ? 1 : 0 }
+        return min(1, max(0, (value - floor) / (ceiling - floor)))
     }
 }
 
@@ -41,29 +74,54 @@ public struct ResidueAnalysisDebugInfo {
     public let uniformity: Double
     public let boundaryContrast: Double
     public let relativeArea: Double
+    public let anchorProximity: Double
+    public let textCoverage: Double
     public let mergedAfterPass1: Bool
+    public let fragmentReduction: Double
+    public let compactnessGain: Double
+    public let varianceReduction: Double
+    public let pass1DeltaScore: Double
     public let confidence: Double
     public let accepted: Bool
     public let rejectReason: String?
 }
 
 /// Analyzes a figure for residual UI element backgrounds (buttons, badges, labels)
-/// using a two-image comparison strategy:
+/// using original-image component detection plus pass-1 delta scoring.
 ///
-/// 1. Detect high-saturation components on the ORIGINAL image (where the button is fully intact)
-/// 2. Verify on the PASS-1 image that text-removal caused fragment merging (UI-element confirmation)
-/// 3. Use the original's blob shape for the mask (not the degraded pass-1 version)
-///
-/// This avoids the problem of analyzing LaMa's blended output where UI elements
-/// have reduced saturation/uniformity in the former text region.
+/// The original crop contributes precise candidate geometry.
+/// The pass-1 crop contributes evidence that text removal made the region more
+/// coherent, less fragmented, or less textured.
 public struct ResidueAnalyzer {
+
+    private struct TextAnchor {
+        let rect: CGRect
+        let textHeight: CGFloat
+        let searchRadius: CGFloat
+    }
+
+    private struct PixelComponent {
+        let id: Int
+        let pixelIndices: [Int]
+        let bounds: CGRect
+        let pixelCount: Int
+        let compactness: Double
+        let uniformity: Double
+        let boundaryContrast: Double
+    }
+
+    private struct FragmentStats {
+        let count: Int
+        let largestCompactness: Double
+        let largestArea: Int
+    }
 
     private let minConfidence: Double
     private let searchRadiusFactor: CGFloat
     private let debug: Bool
 
     public init(
-        minConfidence: Double = 0.67,  // requires merge signal OR 4/4 other signals
+        minConfidence: Double = 0.50,
         searchRadiusFactor: CGFloat = 4.0,
         debug: Bool = false
     ) {
@@ -89,251 +147,529 @@ public struct ResidueAnalyzer {
         let figureArea = Double(w * h)
         guard w > 0, h > 0, !textBounds.isEmpty else { return ([], []) }
 
-        // Render ORIGINAL to bitmap — this is where UI elements are fully intact
-        guard let origCtx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: w * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return ([], []) }
-        origCtx.draw(originalCrop, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let origData = origCtx.data else { return ([], []) }
-        let origPtr = origData.bindMemory(to: UInt8.self, capacity: w * h * 4)
-
-        // Render PASS-1 to bitmap — for fragment-merge verification
-        guard let p1Ctx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: w * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return ([], []) }
-        // Pass-1 may be a different size (512→resized), render to same dimensions
-        let p1W = pass1Result.width, p1H = pass1Result.height
-        let useW = min(w, p1W), useH = min(h, p1H)
-        p1Ctx.draw(pass1Result, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let p1Data = p1Ctx.data else { return ([], []) }
-        let p1Ptr = p1Data.bindMemory(to: UInt8.self, capacity: w * h * 4)
-
-        // Build saturation mask on the ORIGINAL image
-        var satMask = [Bool](repeating: false, count: w * h)
-        for i in 0..<(w * h) {
-            let off = i * 4
-            let r = Double(origPtr[off]), g = Double(origPtr[off+1]), b = Double(origPtr[off+2])
-            let maxC = max(r, g, b), minC = min(r, g, b)
-            let sat = maxC > 10 ? (maxC - minC) / maxC : 0
-            let val = maxC / 255.0
-            satMask[i] = sat > 0.4 && val > 0.25
+        guard let origPtr = renderBitmap(originalCrop, width: w, height: h),
+              let pass1Ptr = renderBitmap(pass1Result, width: w, height: h) else { return ([], []) }
+        defer {
+            origPtr.deallocate()
+            pass1Ptr.deallocate()
         }
 
-        // For each text bound, find connected components in the search ROI
-        var allCandidates: [CandidateBlob] = []
-        var allDebug: [ResidueAnalysisDebugInfo] = []
-        var processedPixels = Set<Int>()
+        let anchors = buildTextAnchors(textBounds: textBounds, width: w, height: h)
+        let satMask = buildSaturationMask(ptr: origPtr, width: w, height: h, satThreshold: 0.40, valueThreshold: 0.25)
+        let components = extractComponents(mask: satMask, ptr: origPtr, width: w, height: h)
 
-        for tb in textBounds {
-            let textH = tb.height * CGFloat(h)
-            let radius = textH * searchRadiusFactor
+        var candidates: [CandidateBlob] = []
+        var debugInfo: [ResidueAnalysisDebugInfo] = []
 
-            // Convert text bound from normalized bottom-left to pixel top-left
-            let tbPx = Int(tb.origin.x * CGFloat(w))
-            let tbPy = h - Int((tb.origin.y + tb.height) * CGFloat(h))
-            let tbPw = max(1, Int(tb.width * CGFloat(w)))
-            let tbPh = max(1, Int(tb.height * CGFloat(h)))
+        for component in components where component.pixelCount >= 50 {
+            guard let anchor = nearestAnchor(for: component.bounds, anchors: anchors) else { continue }
 
-            let roiX = max(0, tbPx - Int(radius))
-            let roiY = max(0, tbPy - Int(radius))
-            let roiX2 = min(w, tbPx + tbPw + Int(radius))
-            let roiY2 = min(h, tbPy + tbPh + Int(radius))
+            let bounds = component.bounds
+            let relArea = Double(component.pixelCount) / figureArea
+            let anchorDistance = rectDistance(bounds, anchor.rect)
+            let anchorProximity = anchor.searchRadius > 0
+                ? max(0, 1.0 - Double(anchorDistance / anchor.searchRadius))
+                : 0
+            let textCoverage = textCoverage(of: bounds, in: anchor.rect)
+            let originalFragments = fragmentStats(
+                rect: bounds,
+                ptr: origPtr,
+                width: w,
+                height: h,
+                satThreshold: 0.40,
+                valueThreshold: 0.25
+            )
+            let pass1Fragments = fragmentStats(
+                rect: bounds,
+                ptr: pass1Ptr,
+                width: w,
+                height: h,
+                satThreshold: 0.25,
+                valueThreshold: 0.18
+            )
+            let originalVariance = regionVariance(rect: bounds, ptr: origPtr, width: w, height: h)
+            let pass1Variance = regionVariance(rect: bounds, ptr: pass1Ptr, width: w, height: h)
 
-            // BFS connected components on the ORIGINAL's saturation mask
-            for startY in roiY..<roiY2 {
-                for startX in roiX..<roiX2 {
-                    let idx = startY * w + startX
-                    guard satMask[idx], !processedPixels.contains(idx) else { continue }
+            let fragmentReduction = max(
+                0,
+                Double(originalFragments.count - pass1Fragments.count) / Double(max(originalFragments.count, 1))
+            )
+            let compactnessGain = max(0, pass1Fragments.largestCompactness - originalFragments.largestCompactness)
+            let varianceReduction = originalVariance > 1
+                ? max(0, (originalVariance - pass1Variance) / originalVariance)
+                : 0
+            let mergedAfterPass1 = pass1Fragments.count < originalFragments.count
 
-                    var queue = [(startX, startY)]
-                    processedPixels.insert(idx)
-                    var minX = startX, maxX = startX, minY = startY, maxY = startY
-                    var sumR = 0.0, sumG = 0.0, sumB = 0.0
-                    var sumR2 = 0.0, sumG2 = 0.0, sumB2 = 0.0
-                    var head = 0
+            let candidate = CandidateBlob(
+                bounds: bounds,
+                pixelIndices: component.pixelIndices,
+                pixelCount: component.pixelCount,
+                dilationRadius: dilationRadius(for: component, anchor: anchor),
+                compactness: component.compactness,
+                uniformity: component.uniformity,
+                boundaryContrast: component.boundaryContrast,
+                relativeArea: relArea,
+                anchorProximity: anchorProximity,
+                textCoverage: textCoverage,
+                mergedAfterPass1: mergedAfterPass1,
+                fragmentReduction: fragmentReduction,
+                compactnessGain: compactnessGain,
+                varianceReduction: varianceReduction
+            )
 
-                    while head < queue.count {
-                        let (cx, cy) = queue[head]; head += 1
-                        let off = (cy * w + cx) * 4
-                        let r = Double(origPtr[off]), g = Double(origPtr[off+1]), b = Double(origPtr[off+2])
-                        sumR += r; sumG += g; sumB += b
-                        sumR2 += r*r; sumG2 += g*g; sumB2 += b*b
-                        minX = min(minX, cx); maxX = max(maxX, cx)
-                        minY = min(minY, cy); maxY = max(maxY, cy)
+            var rejectReason: String? = nil
+            if candidate.confidence < minConfidence {
+                rejectReason = "confidence \(String(format: "%.2f", candidate.confidence)) < \(minConfidence)"
+            } else if relArea > 0.05 {
+                rejectReason = "relative area \(String(format: "%.3f", relArea)) > 5%"
+            }
 
-                        for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
-                            let nx = cx + dx, ny = cy + dy
-                            guard nx >= roiX, nx < roiX2, ny >= roiY, ny < roiY2 else { continue }
-                            let ni = ny * w + nx
-                            guard satMask[ni], !processedPixels.contains(ni) else { continue }
-                            processedPixels.insert(ni)
-                            queue.append((nx, ny))
-                        }
-                    }
+            let accepted = rejectReason == nil
+            debugInfo.append(
+                ResidueAnalysisDebugInfo(
+                    componentBounds: bounds,
+                    pixelCount: component.pixelCount,
+                    compactness: component.compactness,
+                    uniformity: component.uniformity,
+                    boundaryContrast: component.boundaryContrast,
+                    relativeArea: relArea,
+                    anchorProximity: anchorProximity,
+                    textCoverage: textCoverage,
+                    mergedAfterPass1: mergedAfterPass1,
+                    fragmentReduction: fragmentReduction,
+                    compactnessGain: compactnessGain,
+                    varianceReduction: varianceReduction,
+                    pass1DeltaScore: candidate.pass1DeltaScore,
+                    confidence: candidate.confidence,
+                    accepted: accepted,
+                    rejectReason: rejectReason
+                )
+            )
 
-                    let area = queue.count
-                    guard area >= 50 else { continue }
+            if debug {
+                let status = accepted ? "ACCEPT" : "REJECT(\(rejectReason ?? ""))"
+                print(
+                    "[RESIDUE] bounds=(\(Int(bounds.origin.x)),\(Int(bounds.origin.y)) \(Int(bounds.width))×\(Int(bounds.height))) "
+                    + "area=\(component.pixelCount) compact=\(String(format: "%.2f", component.compactness)) "
+                    + "uniform=\(String(format: "%.2f", component.uniformity)) "
+                    + "bContrast=\(String(format: "%.1f", component.boundaryContrast)) "
+                    + "relArea=\(String(format: "%.4f", relArea)) "
+                    + "anchor=\(String(format: "%.2f", anchorProximity)) "
+                    + "textCov=\(String(format: "%.2f", textCoverage)) "
+                    + "fragRed=\(String(format: "%.2f", fragmentReduction)) "
+                    + "compGain=\(String(format: "%.2f", compactnessGain)) "
+                    + "varRed=\(String(format: "%.2f", varianceReduction)) "
+                    + "delta=\(String(format: "%.2f", candidate.pass1DeltaScore)) "
+                    + "conf=\(String(format: "%.2f", candidate.confidence)) → \(status)"
+                )
+            }
 
-                    let bboxW = maxX - minX + 1, bboxH = maxY - minY + 1
-                    let compactness = Double(area) / Double(bboxW * bboxH)
-
-                    let n = Double(area)
-                    let avgVar = ((sumR2/n - (sumR/n)*(sumR/n)) +
-                                  (sumG2/n - (sumG/n)*(sumG/n)) +
-                                  (sumB2/n - (sumB/n)*(sumB/n))) / 3.0
-                    let uniformity = 1.0 / (1.0 + avgVar / 2000.0)
-
-                    let bContrast = boundaryContrast(
-                        queue: queue, ptr: origPtr, w: w, h: h,
-                        processedPixels: processedPixels
-                    )
-
-                    // Fragment-merge verification: count components in same bounding box on pass-1
-                    let mergedAfterPass1 = verifyMerge(
-                        bboxX: minX, bboxY: minY, bboxW: bboxW, bboxH: bboxH,
-                        origPtr: origPtr, p1Ptr: p1Ptr, w: w, h: h,
-                        origComponentCount: countFragments(
-                            x: minX, y: minY, w: bboxW, h: bboxH,
-                            ptr: origPtr, imgW: w, imgH: h
-                        )
-                    )
-
-                    let relArea = Double(area) / figureArea
-                    let bounds = CGRect(x: minX, y: minY, width: bboxW, height: bboxH)
-
-                    let candidate = CandidateBlob(
-                        bounds: bounds, pixelCount: area,
-                        compactness: compactness, uniformity: uniformity,
-                        boundaryContrast: bContrast, relativeArea: relArea,
-                        mergedAfterPass1: mergedAfterPass1
-                    )
-
-                    var rejectReason: String? = nil
-                    if candidate.confidence < minConfidence {
-                        rejectReason = "confidence \(String(format: "%.2f", candidate.confidence)) < \(minConfidence)"
-                    } else if relArea > 0.05 {
-                        rejectReason = "relative area \(String(format: "%.3f", relArea)) > 5%"
-                    }
-
-                    let accepted = rejectReason == nil
-
-                    allDebug.append(ResidueAnalysisDebugInfo(
-                        componentBounds: bounds, pixelCount: area,
-                        compactness: compactness, uniformity: uniformity,
-                        boundaryContrast: bContrast, relativeArea: relArea,
-                        mergedAfterPass1: mergedAfterPass1,
-                        confidence: candidate.confidence,
-                        accepted: accepted, rejectReason: rejectReason
-                    ))
-
-                    if debug {
-                        let status = accepted ? "ACCEPT" : "REJECT(\(rejectReason ?? ""))"
-                        print("[RESIDUE] bounds=(\(minX),\(minY) \(bboxW)×\(bboxH)) area=\(area) compact=\(String(format: "%.2f", compactness)) uniform=\(String(format: "%.2f", uniformity)) bContrast=\(String(format: "%.1f", bContrast)) relArea=\(String(format: "%.4f", relArea)) merged=\(mergedAfterPass1) conf=\(String(format: "%.2f", candidate.confidence)) → \(status)")
-                    }
-
-                    if accepted { allCandidates.append(candidate) }
-                }
+            if accepted {
+                candidates.append(candidate)
             }
         }
 
         if debug {
-            print("[RESIDUE] total: \(allDebug.count) components, \(allCandidates.count) accepted")
+            print("[RESIDUE] total: \(debugInfo.count) components, \(candidates.count) accepted")
         }
 
-        return (candidates: allCandidates, debugInfo: allDebug)
+        return (candidates, debugInfo)
     }
 
-    // MARK: - Fragment Merge Verification
+    // MARK: - Rendering
 
-    /// Counts high-saturation fragments in a bounding box region.
-    private func countFragments(x: Int, y: Int, w: Int, h: Int,
-                                 ptr: UnsafePointer<UInt8>, imgW: Int, imgH: Int) -> Int {
-        var visited = [Bool](repeating: false, count: w * h)
-        var fragments = 0
+    private func renderBitmap(_ image: CGImage, width: Int, height: Int) -> UnsafeMutablePointer<UInt8>? {
+        let ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: width * height * 4)
+        guard let ctx = CGContext(
+            data: ptr,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            ptr.deallocate()
+            return nil
+        }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return ptr
+    }
 
-        for ry in 0..<h {
-            for rx in 0..<w {
-                let px = x + rx, py = y + ry
-                guard px < imgW, py < imgH else { continue }
-                let localIdx = ry * w + rx
-                guard !visited[localIdx] else { continue }
+    // MARK: - Text Anchors
 
-                let off = (py * imgW + px) * 4
-                let r = Double(ptr[off]), g = Double(ptr[off+1]), b = Double(ptr[off+2])
-                let maxC = max(r, g, b), minC = min(r, g, b)
-                let sat = maxC > 10 ? (maxC - minC) / maxC : 0
-                guard sat > 0.4, maxC / 255.0 > 0.25 else { continue }
+    private func buildTextAnchors(textBounds: [CGRect], width: Int, height: Int) -> [TextAnchor] {
+        textBounds.map { tb in
+            let x = tb.origin.x * CGFloat(width)
+            let y = CGFloat(height) - ((tb.origin.y + tb.height) * CGFloat(height))
+            let w = max(1, tb.width * CGFloat(width))
+            let h = max(1, tb.height * CGFloat(height))
+            let rect = CGRect(x: x, y: y, width: w, height: h)
+            return TextAnchor(rect: rect, textHeight: h, searchRadius: h * searchRadiusFactor)
+        }
+    }
 
-                // BFS this fragment
-                fragments += 1
-                var queue = [(rx, ry)]
-                visited[localIdx] = true
-                var qHead = 0
-                while qHead < queue.count {
-                    let (cx, cy) = queue[qHead]; qHead += 1
-                    for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
-                        let nx = cx + dx, ny = cy + dy
-                        guard nx >= 0, nx < w, ny >= 0, ny < h else { continue }
-                        let ni = ny * w + nx
-                        guard !visited[ni] else { continue }
-                        let npx = x + nx, npy = y + ny
-                        guard npx < imgW, npy < imgH else { continue }
-                        let noff = (npy * imgW + npx) * 4
-                        let nr = Double(ptr[noff]), ng = Double(ptr[noff+1]), nb = Double(ptr[noff+2])
-                        let nmaxC = max(nr, ng, nb), nminC = min(nr, ng, nb)
-                        let nsat = nmaxC > 10 ? (nmaxC - nminC) / nmaxC : 0
-                        guard nsat > 0.4, nmaxC / 255.0 > 0.25 else { continue }
-                        visited[ni] = true
-                        queue.append((nx, ny))
-                    }
-                }
+    private func nearestAnchor(for bounds: CGRect, anchors: [TextAnchor]) -> TextAnchor? {
+        var best: TextAnchor?
+        var bestDistance = Double.greatestFiniteMagnitude
+
+        for anchor in anchors {
+            let distance = rectDistance(bounds, anchor.rect)
+            guard distance <= anchor.searchRadius else { continue }
+            if distance < bestDistance {
+                bestDistance = distance
+                best = anchor
             }
         }
-        return fragments
+
+        return best
     }
 
-    /// Verifies that pass-1 merged originally separate fragments in the same bounding box.
-    /// This is a strong UI-element signal: text removal causes button fragments to merge,
-    /// but photo content fragments do not merge after text removal.
-    private func verifyMerge(bboxX: Int, bboxY: Int, bboxW: Int, bboxH: Int,
-                              origPtr: UnsafePointer<UInt8>,
-                              p1Ptr: UnsafePointer<UInt8>,
-                              w: Int, h: Int,
-                              origComponentCount: Int) -> Bool {
-        let p1Count = countFragments(x: bboxX, y: bboxY, w: bboxW, h: bboxH,
-                                      ptr: p1Ptr, imgW: w, imgH: h)
-        // Merge confirmed if pass-1 has fewer fragments than original
-        return p1Count < origComponentCount
+    private func rectDistance(_ a: CGRect, _ b: CGRect) -> CGFloat {
+        let dx: CGFloat
+        if a.maxX < b.minX {
+            dx = b.minX - a.maxX
+        } else if b.maxX < a.minX {
+            dx = a.minX - b.maxX
+        } else {
+            dx = 0
+        }
+
+        let dy: CGFloat
+        if a.maxY < b.minY {
+            dy = b.minY - a.maxY
+        } else if b.maxY < a.minY {
+            dy = a.minY - b.maxY
+        } else {
+            dy = 0
+        }
+
+        return hypot(dx, dy)
     }
 
-    // MARK: - Boundary Contrast
+    private func textCoverage(of componentBounds: CGRect, in textRect: CGRect) -> Double {
+        let intersection = componentBounds.intersection(textRect)
+        guard !intersection.isEmpty else { return 0 }
+        let textArea = textRect.width * textRect.height
+        guard textArea > 0 else { return 0 }
+        return min(1, max(0, (intersection.width * intersection.height) / textArea))
+    }
+
+    // MARK: - Original-image Evidence
+
+    private func buildSaturationMask(
+        ptr: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int,
+        satThreshold: Double,
+        valueThreshold: Double
+    ) -> [Bool] {
+        var mask = [Bool](repeating: false, count: width * height)
+        for idx in 0..<(width * height) {
+            let off = idx * 4
+            let r = Double(ptr[off])
+            let g = Double(ptr[off + 1])
+            let b = Double(ptr[off + 2])
+            let maxC = max(r, g, b)
+            let minC = min(r, g, b)
+            let sat = maxC > 10 ? (maxC - minC) / maxC : 0
+            let val = maxC / 255.0
+            mask[idx] = sat > satThreshold && val > valueThreshold
+        }
+        return mask
+    }
+
+    private func extractComponents(
+        mask: [Bool],
+        ptr: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int
+    ) -> [PixelComponent] {
+        var labels = [Int](repeating: -1, count: width * height)
+        var rawComponents: [(pixels: [Int], minX: Int, maxX: Int, minY: Int, maxY: Int)] = []
+
+        for startIndex in 0..<(width * height) {
+            guard mask[startIndex], labels[startIndex] == -1 else { continue }
+
+            let componentId = rawComponents.count
+            var queue = [startIndex]
+            var pixels: [Int] = []
+            labels[startIndex] = componentId
+            var head = 0
+
+            let startX = startIndex % width
+            let startY = startIndex / width
+            var minX = startX, maxX = startX, minY = startY, maxY = startY
+
+            while head < queue.count {
+                let index = queue[head]
+                head += 1
+                pixels.append(index)
+
+                let x = index % width
+                let y = index / width
+                minX = min(minX, x)
+                maxX = max(maxX, x)
+                minY = min(minY, y)
+                maxY = max(maxY, y)
+
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let nx = x + dx
+                    let ny = y + dy
+                    guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                    let neighbor = ny * width + nx
+                    guard mask[neighbor], labels[neighbor] == -1 else { continue }
+                    labels[neighbor] = componentId
+                    queue.append(neighbor)
+                }
+            }
+
+            rawComponents.append((pixels: pixels, minX: minX, maxX: maxX, minY: minY, maxY: maxY))
+        }
+
+        var result: [PixelComponent] = []
+        result.reserveCapacity(rawComponents.count)
+
+        for (componentId, raw) in rawComponents.enumerated() {
+            let pixelCount = raw.pixels.count
+            guard pixelCount >= 50 else { continue }
+
+            var sumR = 0.0, sumG = 0.0, sumB = 0.0
+            var sumR2 = 0.0, sumG2 = 0.0, sumB2 = 0.0
+            for index in raw.pixels {
+                let off = index * 4
+                let r = Double(ptr[off])
+                let g = Double(ptr[off + 1])
+                let b = Double(ptr[off + 2])
+                sumR += r
+                sumG += g
+                sumB += b
+                sumR2 += r * r
+                sumG2 += g * g
+                sumB2 += b * b
+            }
+
+            let n = Double(pixelCount)
+            let avgVar = ((sumR2 / n - pow(sumR / n, 2))
+                        + (sumG2 / n - pow(sumG / n, 2))
+                        + (sumB2 / n - pow(sumB / n, 2))) / 3.0
+            let uniformity = 1.0 / (1.0 + avgVar / 2000.0)
+
+            let bboxW = raw.maxX - raw.minX + 1
+            let bboxH = raw.maxY - raw.minY + 1
+            let compactness = Double(pixelCount) / Double(bboxW * bboxH)
+            let bounds = CGRect(x: raw.minX, y: raw.minY, width: bboxW, height: bboxH)
+
+            result.append(
+                PixelComponent(
+                    id: componentId,
+                    pixelIndices: raw.pixels,
+                    bounds: bounds,
+                    pixelCount: pixelCount,
+                    compactness: compactness,
+                    uniformity: uniformity,
+                    boundaryContrast: boundaryContrast(
+                        componentId: componentId,
+                        pixelIndices: raw.pixels,
+                        labels: labels,
+                        ptr: ptr,
+                        width: width,
+                        height: height
+                    )
+                )
+            )
+        }
+
+        return result
+    }
 
     private func boundaryContrast(
-        queue: [(Int, Int)], ptr: UnsafePointer<UInt8>,
-        w: Int, h: Int, processedPixels: Set<Int>
+        componentId: Int,
+        pixelIndices: [Int],
+        labels: [Int],
+        ptr: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int
     ) -> Double {
-        var totalDiff = 0.0, count = 0
-        let step = max(1, queue.count / 200)
-        for i in stride(from: 0, to: queue.count, by: step) {
-            let (cx, cy) = queue[i]
-            let off = (cy * w + cx) * 4
-            let r = Double(ptr[off]), g = Double(ptr[off+1]), b = Double(ptr[off+2])
-            for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
-                let nx = cx + dx, ny = cy + dy
-                guard nx >= 0, nx < w, ny >= 0, ny < h else { continue }
-                let ni = ny * w + nx
-                if processedPixels.contains(ni) { continue }
-                let noff = ni * 4
-                totalDiff += abs(r - Double(ptr[noff])) + abs(g - Double(ptr[noff+1])) + abs(b - Double(ptr[noff+2]))
+        let step = max(1, pixelIndices.count / 200)
+        var totalDiff = 0.0
+        var count = 0
+
+        for i in stride(from: 0, to: pixelIndices.count, by: step) {
+            let index = pixelIndices[i]
+            let x = index % width
+            let y = index / width
+            let off = index * 4
+            let r = Double(ptr[off])
+            let g = Double(ptr[off + 1])
+            let b = Double(ptr[off + 2])
+
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let nx = x + dx
+                let ny = y + dy
+                guard nx >= 0, nx < width, ny >= 0, ny < height else { continue }
+                let neighbor = ny * width + nx
+                guard labels[neighbor] != componentId else { continue }
+
+                let noff = neighbor * 4
+                totalDiff += abs(r - Double(ptr[noff]))
+                    + abs(g - Double(ptr[noff + 1]))
+                    + abs(b - Double(ptr[noff + 2]))
                 count += 1
             }
         }
+
         return count > 0 ? totalDiff / Double(count) / 3.0 : 0
+    }
+
+    // MARK: - Pass-1 Delta Analysis
+
+    private func regionVariance(
+        rect: CGRect,
+        ptr: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int
+    ) -> Double {
+        let minX = max(0, Int(floor(rect.minX)))
+        let minY = max(0, Int(floor(rect.minY)))
+        let maxX = min(width, Int(ceil(rect.maxX)))
+        let maxY = min(height, Int(ceil(rect.maxY)))
+        guard minX < maxX, minY < maxY else { return 0 }
+
+        var sumR = 0.0, sumG = 0.0, sumB = 0.0
+        var sumR2 = 0.0, sumG2 = 0.0, sumB2 = 0.0
+        var count = 0.0
+
+        for py in minY..<maxY {
+            for px in minX..<maxX {
+                let off = (py * width + px) * 4
+                let r = Double(ptr[off])
+                let g = Double(ptr[off + 1])
+                let b = Double(ptr[off + 2])
+                sumR += r
+                sumG += g
+                sumB += b
+                sumR2 += r * r
+                sumG2 += g * g
+                sumB2 += b * b
+                count += 1
+            }
+        }
+
+        guard count > 1 else { return 0 }
+        let varR = sumR2 / count - pow(sumR / count, 2)
+        let varG = sumG2 / count - pow(sumG / count, 2)
+        let varB = sumB2 / count - pow(sumB / count, 2)
+        return (varR + varG + varB) / 3.0
+    }
+
+    private func fragmentStats(
+        rect: CGRect,
+        ptr: UnsafePointer<UInt8>,
+        width: Int,
+        height: Int,
+        satThreshold: Double,
+        valueThreshold: Double
+    ) -> FragmentStats {
+        let minX = max(0, Int(floor(rect.minX)))
+        let minY = max(0, Int(floor(rect.minY)))
+        let maxX = min(width, Int(ceil(rect.maxX)))
+        let maxY = min(height, Int(ceil(rect.maxY)))
+        guard minX < maxX, minY < maxY else {
+            return FragmentStats(count: 0, largestCompactness: 0, largestArea: 0)
+        }
+
+        let regionW = maxX - minX
+        let regionH = maxY - minY
+        var visited = [Bool](repeating: false, count: regionW * regionH)
+        var components: [(area: Int, compactness: Double)] = []
+
+        for startY in 0..<regionH {
+            for startX in 0..<regionW {
+                let localIndex = startY * regionW + startX
+                guard !visited[localIndex] else { continue }
+
+                let px = minX + startX
+                let py = minY + startY
+                let pixelIndex = py * width + px
+                guard pixelMatches(ptr: ptr, index: pixelIndex, satThreshold: satThreshold, valueThreshold: valueThreshold) else {
+                    continue
+                }
+
+                visited[localIndex] = true
+                var queue = [(startX, startY)]
+                var head = 0
+                var minLocalX = startX, maxLocalX = startX, minLocalY = startY, maxLocalY = startY
+
+                while head < queue.count {
+                    let (cx, cy) = queue[head]
+                    head += 1
+                    minLocalX = min(minLocalX, cx)
+                    maxLocalX = max(maxLocalX, cx)
+                    minLocalY = min(minLocalY, cy)
+                    maxLocalY = max(maxLocalY, cy)
+
+                    for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                        let nx = cx + dx
+                        let ny = cy + dy
+                        guard nx >= 0, nx < regionW, ny >= 0, ny < regionH else { continue }
+                        let neighborLocal = ny * regionW + nx
+                        guard !visited[neighborLocal] else { continue }
+
+                        let neighborPixel = (minY + ny) * width + (minX + nx)
+                        guard pixelMatches(ptr: ptr, index: neighborPixel, satThreshold: satThreshold, valueThreshold: valueThreshold) else {
+                            continue
+                        }
+
+                        visited[neighborLocal] = true
+                        queue.append((nx, ny))
+                    }
+                }
+
+                let area = queue.count
+                guard area >= 20 else { continue }
+                let bboxArea = (maxLocalX - minLocalX + 1) * (maxLocalY - minLocalY + 1)
+                let compactness = bboxArea > 0 ? Double(area) / Double(bboxArea) : 0
+                components.append((area: area, compactness: compactness))
+            }
+        }
+
+        components.sort { lhs, rhs in
+            if lhs.area == rhs.area {
+                return lhs.compactness > rhs.compactness
+            }
+            return lhs.area > rhs.area
+        }
+
+        return FragmentStats(
+            count: components.count,
+            largestCompactness: components.first?.compactness ?? 0,
+            largestArea: components.first?.area ?? 0
+        )
+    }
+
+    private func pixelMatches(
+        ptr: UnsafePointer<UInt8>,
+        index: Int,
+        satThreshold: Double,
+        valueThreshold: Double
+    ) -> Bool {
+        let off = index * 4
+        let r = Double(ptr[off])
+        let g = Double(ptr[off + 1])
+        let b = Double(ptr[off + 2])
+        let maxC = max(r, g, b)
+        let minC = min(r, g, b)
+        let sat = maxC > 10 ? (maxC - minC) / maxC : 0
+        let val = maxC / 255.0
+        return sat > satThreshold && val > valueThreshold
+    }
+
+    // MARK: - Support Growth
+
+    private func dilationRadius(for component: PixelComponent, anchor: TextAnchor) -> Int {
+        let componentScale = max(component.bounds.width, component.bounds.height) * 0.10
+        let textScale = anchor.textHeight * 0.45
+        return max(3, min(14, Int(round(max(componentScale, textScale)))))
     }
 }

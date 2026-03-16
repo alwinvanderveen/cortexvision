@@ -9,7 +9,7 @@ struct MainView: View {
             // Content area
             HSplitView {
                 PreviewPanel(
-                    capturedImage: viewModel.capturedImage,
+                    capturedImage: viewModel.previewImage ?? viewModel.capturedImage,
                     captureState: viewModel.captureState,
                     overlays: viewModel.analysisOverlays,
                     interactiveItems: viewModel.overlayItems,

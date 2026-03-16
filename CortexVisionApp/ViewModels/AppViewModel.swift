@@ -9,6 +9,7 @@ public final class AppViewModel: ObservableObject {
     @Published var selectedMode: CaptureMode = .window
     @Published var captureState: CaptureState = .idle
     @Published var capturedImage: CGImage?
+    @Published var previewImage: CGImage?
     @Published var analysisOverlays: [AnalysisOverlay] = []
     @Published var overlayItems: [OverlayItem] = []
     @Published var selectedOverlayId: UUID?
@@ -26,6 +27,8 @@ public final class AppViewModel: ObservableObject {
     private(set) var scrollCaptureProvider: ScrollCaptureProvider?
     private(set) var exportDestination: ExportDestination?
     private(set) var permissionManager: PermissionManager?
+    private let figureRetoucher: (any FigureRetouching)?
+    private var originalFigureImages: [UUID: CGImage] = [:]
     private let regionSelector = RegionSelector()
     private let ocrEngine = OCREngine()
     private let figureDetector = FigureDetector()
@@ -71,7 +74,7 @@ public final class AppViewModel: ObservableObject {
     }
 
     var imageSize: CGSize {
-        guard let image = capturedImage else { return .zero }
+        guard let image = previewImage ?? capturedImage else { return .zero }
         return CGSize(width: image.width, height: image.height)
     }
 
@@ -81,19 +84,22 @@ public final class AppViewModel: ObservableObject {
         captureProvider: CaptureProvider? = nil,
         scrollCaptureProvider: ScrollCaptureProvider? = nil,
         exportDestination: ExportDestination? = nil,
-        permissionManager: PermissionManager? = nil
+        permissionManager: PermissionManager? = nil,
+        figureRetoucher: (any FigureRetouching)? = nil
     ) {
         self.captureProvider = captureProvider
         self.scrollCaptureProvider = scrollCaptureProvider
         self.exportDestination = exportDestination
         self.permissionManager = permissionManager
+        self.figureRetoucher = figureRetoucher
     }
 
     /// Convenience init with default production providers.
     convenience init() {
         self.init(
             captureProvider: ScreenCaptureKitProvider(),
-            permissionManager: LocalPermissionManager()
+            permissionManager: LocalPermissionManager(),
+            figureRetoucher: FigureInpaintingPipeline()
         )
     }
 
@@ -127,9 +133,11 @@ public final class AppViewModel: ObservableObject {
     func startCapture() async {
         permissionError = nil
         capturedImage = nil
+        previewImage = nil
         analysisOverlays = []
         ocrResult = nil
         figureResult = nil
+        originalFigureImages = [:]
         captureState = .idle
 
         // Check permission (silent preflight first, prompt only if needed)
@@ -193,6 +201,7 @@ public final class AppViewModel: ObservableObject {
         do {
             let result = try await provider.captureWindow(id: window.id)
             capturedImage = result.image
+            previewImage = result.image
             captureState = .captured(width: result.image.width, height: result.image.height)
             await runAnalysis(on: result.image)
         } catch {
@@ -223,6 +232,7 @@ public final class AppViewModel: ObservableObject {
         do {
             let result = try await provider.captureRegion(rect)
             capturedImage = result.image
+            previewImage = result.image
             captureState = .captured(width: result.image.width, height: result.image.height)
             await runAnalysis(on: result.image)
         } catch {
@@ -237,6 +247,7 @@ public final class AppViewModel: ObservableObject {
         analysisOverlays = []
         ocrResult = nil
         figureResult = nil
+        previewImage = image
 
         let debug = debugLogURL != nil
 
@@ -262,6 +273,12 @@ public final class AppViewModel: ObservableObject {
             let textBounds = ocrRes.textBlocks.map(\.bounds)
             let figureRes = try await figureDetector.detectFigures(in: image, textBounds: textBounds)
             figureResult = figureRes
+            originalFigureImages = Dictionary(
+                uniqueKeysWithValues: figureRes.figures.compactMap { figure in
+                    guard let extractedImage = figure.extractedImage else { return nil }
+                    return (figure.id, extractedImage)
+                }
+            )
 
             if debug {
                 debugLog("[AppViewModel] Figures: \(figureRes.figures.count)")
@@ -437,8 +454,14 @@ public final class AppViewModel: ObservableObject {
 
     /// Toggle exclusion state of an overlay (include/exclude from export).
     func toggleOverlayExclusion(id: UUID) {
+        let shouldRefreshRetouchedPreview = overlayController.overlayItems.first(where: { $0.id == id }).map {
+            $0.kind == .text && ($0.textOverlayClassification == .overlay || $0.textOverlayClassification == .edgeOverlay)
+        } ?? false
         overlayController.toggleOverlayExclusion(id: id)
         syncOverlayState()
+        if shouldRefreshRetouchedPreview {
+            rebuildRetouchedPreview()
+        }
     }
 
     /// Delete the selected overlay.
@@ -461,9 +484,127 @@ public final class AppViewModel: ObservableObject {
             for: overlayId, from: image, figures: result.figures
         ) {
             if let updatedFigures = extraction.updatedFigures {
+                for figure in updatedFigures {
+                    if let extractedImage = figure.extractedImage {
+                        originalFigureImages[figure.id] = extractedImage
+                    }
+                }
                 figureResult = FigureDetectionResult(figures: updatedFigures)
             }
         }
+        rebuildRetouchedPreview()
         syncOverlayState()
+    }
+
+    /// Rebuilds the preview image and figure thumbnails from the original captured image,
+    /// applying retouching only to excluded overlay-text items that belong to figures.
+    private func rebuildRetouchedPreview() {
+        guard let sourceImage = capturedImage, let result = figureResult else {
+            previewImage = capturedImage
+            return
+        }
+
+        seedOriginalFigureImagesIfNeeded(figures: result.figures, sourceImage: sourceImage)
+
+        let figureOverlayIdsByIndex = Dictionary(
+            uniqueKeysWithValues: overlayController.overlayItems
+                .filter { $0.kind == .figure && $0.sourceFigureIndex != nil }
+                .map { ($0.sourceFigureIndex!, $0.id) }
+        )
+        let excludedOverlayTextsByFigure = Dictionary(
+            grouping: overlayController.overlayItems.compactMap { item -> (UUID, OverlayItem)? in
+                guard item.kind == .text,
+                      item.isExcluded,
+                      (item.textOverlayClassification == .overlay || item.textOverlayClassification == .edgeOverlay),
+                      let figureOverlayId = item.associatedFigureOverlayId else {
+                    return nil
+                }
+                return (figureOverlayId, item)
+            },
+            by: \.0
+        ).mapValues { $0.map(\.1) }
+        let textBlocksById = Dictionary(
+            uniqueKeysWithValues: (ocrResult?.textBlocks ?? []).map { ($0.id, $0) }
+        )
+
+        if excludedOverlayTextsByFigure.isEmpty {
+            let restoredFigures = result.figures.map { figure in
+                restoredFigure(from: figure, sourceImage: sourceImage)
+            }
+            figureResult = FigureDetectionResult(figures: restoredFigures)
+            previewImage = sourceImage
+            return
+        }
+
+        var updatedFigures = result.figures
+        var composedPreview = sourceImage
+
+        for (index, figure) in result.figures.enumerated() {
+            let baseCrop = originalFigureImages[figure.id]
+                ?? FigurePreviewComposer.cropFigure(from: sourceImage, figureBounds: figure.bounds)
+                ?? figure.extractedImage
+            guard let figureOverlayId = figureOverlayIdsByIndex[index] else {
+                updatedFigures[index] = restoredFigure(from: figure, sourceImage: sourceImage)
+                continue
+            }
+
+            let excludedTextItems = excludedOverlayTextsByFigure[figureOverlayId] ?? []
+            let excludedTextBounds = Array(
+                Set(excludedTextItems.flatMap(\.sourceTextBlockIds))
+            ).compactMap { textBlocksById[$0]?.bounds }
+
+            var finalCrop = baseCrop
+            if !excludedTextBounds.isEmpty, let figureRetoucher {
+                finalCrop = figureRetoucher.removeText(
+                    from: sourceImage,
+                    figureBounds: figure.bounds,
+                    textBounds: excludedTextBounds
+                ) ?? baseCrop
+            }
+
+            updatedFigures[index] = DetectedFigure(
+                id: figure.id,
+                bounds: figure.bounds,
+                label: figure.label,
+                extractedImage: finalCrop,
+                isSelected: figure.isSelected
+            )
+
+            if !excludedTextBounds.isEmpty,
+               let finalCrop,
+               let composited = FigurePreviewComposer.compositeFigure(
+                finalCrop,
+                into: composedPreview,
+                figureBounds: figure.bounds
+            ) {
+                composedPreview = composited
+            }
+        }
+
+        figureResult = FigureDetectionResult(figures: updatedFigures)
+        previewImage = composedPreview
+    }
+
+    private func seedOriginalFigureImagesIfNeeded(figures: [DetectedFigure], sourceImage: CGImage) {
+        for figure in figures where originalFigureImages[figure.id] == nil {
+            if let extractedImage = figure.extractedImage {
+                originalFigureImages[figure.id] = extractedImage
+            } else if let cropped = FigurePreviewComposer.cropFigure(from: sourceImage, figureBounds: figure.bounds) {
+                originalFigureImages[figure.id] = cropped
+            }
+        }
+    }
+
+    private func restoredFigure(from figure: DetectedFigure, sourceImage: CGImage) -> DetectedFigure {
+        let originalCrop = originalFigureImages[figure.id]
+            ?? FigurePreviewComposer.cropFigure(from: sourceImage, figureBounds: figure.bounds)
+            ?? figure.extractedImage
+        return DetectedFigure(
+            id: figure.id,
+            bounds: figure.bounds,
+            label: figure.label,
+            extractedImage: originalCrop,
+            isSelected: figure.isSelected
+        )
     }
 }

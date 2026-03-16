@@ -734,6 +734,11 @@ Tekst op figuren visueel onderscheiden, koppelen aan de bijbehorende figuur, en 
 | TC-5b.41 | `testMultipleImageNews2` fig met UI-overlay: foto-pixels behouden | >70% preserved, avgPreserveDiff <5 |
 | TC-5b.42 | `testMultipleImageNews2` fig zonder UI-overlay: geen pass 2 triggered | Fast path, quality ongewijzigd |
 | TC-5b.43 | `testMultipleImageNews2` fig met UI-overlay: lokale validatie | Geen collateral damage buiten expanded mask (context-ring check) |
+| TC-5b.44 | Exclude overlay-tekst op figuur → linker preview en results thumbnail tonen retouched figuur | Alleen gekoppelde figuur verandert zichtbaar |
+| TC-5b.45 | Re-include overlay-tekst → linker preview en results thumbnail herstellen originele figuur | Preview en `extractedImage` vallen terug op originele crop, niet op tussenresultaat |
+| TC-5b.46 | Groene figure-toggle in preview/results | Linker preview blijft pixel-identiek; geen figuren wisselen van positie |
+| TC-5b.47 | Retouch van één figuur met meerdere figuren zichtbaar | Niet-getargete figuren blijven pixel-identiek in linker preview |
+| TC-5b.48 | Re-compositie van replacement crop naar linker preview | Replacement crop komt terug binnen de bounds van de bedoelde figuur en overschrijft geen andere figuur |
 
 ---
 

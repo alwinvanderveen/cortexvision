@@ -10,7 +10,7 @@ import Foundation
 ///
 /// The pipeline is generic: it works for any UI overlay color, shape, and text offset.
 /// No architecture or threshold depends on a specific reference image.
-public final class FigureInpaintingPipeline: @unchecked Sendable {
+public final class FigureInpaintingPipeline: FigureRetouching, @unchecked Sendable {
 
     private struct ExpandedMaskArtifacts {
         let mask: CGImage
@@ -137,10 +137,15 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
         // The merge-signal and multi-signal scoring already filtered most false positives.
         // Large blobs with merge confirmation are the strongest candidates.
         let validatedCandidates = candidates.filter { candidate in
-            // Require minimum area to be worth a pass-2 mask entry
-            if candidate.pixelCount < 200 && !candidate.mergedAfterPass1 {
+            // Tiny fragments are only worth a pass-2 entry if pass 1 materially
+            // improved their coherence. Otherwise they are usually photo noise.
+            if candidate.pixelCount < 120 && candidate.pass1DeltaScore < 0.45 {
                 if debug {
-                    print("[PIPELINE] Pre-validation: blob \(Int(candidate.bounds.origin.x)),\(Int(candidate.bounds.origin.y)) rejected (too small without merge: \(candidate.pixelCount)px)")
+                    print(
+                        "[PIPELINE] Pre-validation: blob \(Int(candidate.bounds.origin.x)),\(Int(candidate.bounds.origin.y)) "
+                        + "rejected (small with weak pass1 delta: \(candidate.pixelCount)px, "
+                        + "delta=\(String(format: "%.2f", candidate.pass1DeltaScore)))"
+                    )
                 }
                 return false
             }
@@ -199,7 +204,7 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
 
     // MARK: - Mask Merging
 
-    /// Merges candidate blob bounding boxes into the text mask and records the real
+    /// Merges precise candidate supports into the text mask and records the real
     /// expanded support used for pass 2. Validation must reason about the same support.
     private func mergeBlobs(textMask: CGImage, candidates: [CandidateBlob],
                             imageSize: CGSize) -> ExpandedMaskArtifacts? {
@@ -213,35 +218,50 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
 
         // Draw existing text mask
         ctx.draw(textMask, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data else { return nil }
+        let ptr = data.bindMemory(to: UInt8.self, capacity: w * h)
 
-        // Add candidate blob bounding boxes with small margin (pixel coords, top-left origin)
-        // The margin ensures the full UI element is covered including anti-aliased edges.
-        // CGContext drawing uses bottom-left origin, so flip Y.
-        ctx.setFillColor(gray: 1, alpha: 1)
-        let imageBounds = CGRect(x: 0, y: 0, width: w, height: h)
+        // Add dilated candidate supports instead of coarse rectangles. This preserves the
+        // component geometry while still covering anti-aliased edges and nearby low-chroma
+        // pixels around the detected residue.
         var expandedBounds: [CGRect] = []
         for candidate in candidates {
-            let b = candidate.bounds
-            // 25% margin compensates for anti-aliased edges and parts of the UI element
-            // that fall outside the detected high-saturation blob (e.g., button bottom half
-            // that extends below the text-anchored search ROI)
-            let marginX = max(10.0, b.width * 0.25)
-            let marginY = max(10.0, b.height * 0.25)
-            let expandedRect = CGRect(
-                x: b.origin.x - marginX,
-                y: b.origin.y - marginY,
-                width: b.width + marginX * 2,
-                height: b.height + marginY * 2
-            ).intersection(imageBounds)
-            guard !expandedRect.isEmpty else { continue }
+            let radius = candidate.dilationRadius
+            var minX = w, minY = h, maxX = -1, maxY = -1
 
-            let expandedX = expandedRect.origin.x
-            let expandedY = expandedRect.origin.y
-            let expandedW = expandedRect.width
-            let expandedH = expandedRect.height
-            let flippedY = CGFloat(h) - expandedY - expandedH
-            ctx.fill(CGRect(x: expandedX, y: flippedY, width: expandedW, height: expandedH))
-            expandedBounds.append(expandedRect.integral)
+            for index in candidate.pixelIndices {
+                let px = index % w
+                let py = index / w
+
+                let startX = max(0, px - radius)
+                let endX = min(w - 1, px + radius)
+                let startY = max(0, py - radius)
+                let endY = min(h - 1, py + radius)
+
+                for ny in startY...endY {
+                    for nx in startX...endX {
+                        let dx = nx - px
+                        let dy = ny - py
+                        guard dx * dx + dy * dy <= radius * radius else { continue }
+                        ptr[ny * w + nx] = 255
+                        minX = min(minX, nx)
+                        minY = min(minY, ny)
+                        maxX = max(maxX, nx)
+                        maxY = max(maxY, ny)
+                    }
+                }
+            }
+
+            if minX <= maxX, minY <= maxY {
+                expandedBounds.append(
+                    CGRect(
+                        x: minX,
+                        y: minY,
+                        width: maxX - minX + 1,
+                        height: maxY - minY + 1
+                    )
+                )
+            }
         }
 
         guard let mask = ctx.makeImage() else { return nil }

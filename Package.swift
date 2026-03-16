@@ -28,7 +28,7 @@ let package = Package(
         ),
         .testTarget(
             name: "CortexVisionTests",
-            dependencies: ["CortexVision"],
+            dependencies: ["CortexVision", "CortexVisionApp"],
             path: "Tests/CortexVisionTests",
             resources: [.copy("Resources")]
         ),

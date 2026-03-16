@@ -1114,5 +1114,50 @@
     "input": "2 text blocks, no figures",
     "expectedOutput": "All text overlays have textOverlayClassification == nil and associatedFigureOverlayId == nil",
     "tags": ["core"]
+  },
+  "TC-5b.44: Excluding overlay-text updates preview and associated figure image": {
+    "id": "TC-5b.44",
+    "category": "Inpainting",
+    "functional": "Excluding text-on-figure immediately updates both the main preview and the figure thumbnail with the retouched image",
+    "technical": "AppViewModel.toggleOverlayExclusion rebuilds previewImage and FigureDetectionResult.extractedImage for the associated figure when an overlay-text item is excluded",
+    "input": "1 captured image, 1 figure, 1 overlay-text item on that figure, fake retoucher returns a distinct replacement crop",
+    "expectedOutput": "Preview pixels inside the figure bounds and the figure extractedImage both change to the retouched crop",
+    "tags": ["core", "ui", "figures"]
+  },
+  "TC-5b.45: Re-including overlay-text restores original preview and figure image": {
+    "id": "TC-5b.45",
+    "category": "Inpainting",
+    "functional": "Undoing overlay-text exclusion restores the original figure in both preview and results",
+    "technical": "AppViewModel.toggleOverlayExclusion recomposes previewImage from the original captured image and restores the original figure crop when the overlay-text item is re-included",
+    "input": "1 captured image, 1 figure, 1 overlay-text item on that figure, exclude then re-include",
+    "expectedOutput": "Preview pixels and figure extractedImage match the original figure crop after re-include",
+    "tags": ["core", "ui", "figures"]
+  },
+  "TC-5b.46: Figure exclusion toggle does not alter preview figure positions": {
+    "id": "TC-5b.46",
+    "category": "Inpainting",
+    "functional": "Excluding a figure overlay only changes export inclusion state and does not alter the left preview image",
+    "technical": "AppViewModel.toggleOverlayExclusion only rebuilds the retouched preview for excluded overlay-text items, not for figure overlays",
+    "input": "Preview with two figures, toggle exclusion on a figure overlay",
+    "expectedOutput": "Preview pixels for both figures remain at their original positions and colors",
+    "tags": ["core", "ui", "figures"]
+  },
+  "TC-5b.47: Retouching one figure leaves other preview figures unchanged": {
+    "id": "TC-5b.47",
+    "category": "Inpainting",
+    "functional": "Retouching overlay-text on one figure updates only that figure in the left preview and leaves other figures untouched",
+    "technical": "AppViewModel.rebuildRetouchedPreview composites only figures with excluded overlay-text and preserves the preview crop inside unrelated figure bounds",
+    "input": "Preview with two figures, one overlay-text item associated to the first figure, exclude that overlay-text",
+    "expectedOutput": "Target figure bounds change to the retouched crop while the crop inside unrelated figure bounds stays identical",
+    "tags": ["core", "ui", "figures"]
+  },
+  "TC-5b.48: FigurePreviewComposer composites replacement crop into matching figure bounds": {
+    "id": "TC-5b.48",
+    "category": "Inpainting",
+    "functional": "Retouched figure pixels are recomposited back into the intended figure slot in the left preview",
+    "technical": "FigurePreviewComposer.compositeFigure converts the target rect into CGContext coordinates before drawing the replacement crop, so recomposition stays bound to the requested figureBounds",
+    "input": "Preview image with two figures and a distinct replacement crop composited into the first figure bounds",
+    "expectedOutput": "Cropping the recomposited preview at the first figure bounds returns the replacement crop, while the second figure bounds remain unchanged",
+    "tags": ["core", "ui", "figures"]
   }
 }
