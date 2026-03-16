@@ -589,7 +589,7 @@ struct CaptureVerificationTests {
         try await Task.sleep(for: .milliseconds(500))
 
         let provider = ScreenCaptureKitProvider()
-        let result = try await provider.captureRegion(ref.window.frame)
+        let result = try await provider.captureRegion(ref.viewportScreenRect)
         ref.close()
 
         let engine = OCREngine()
@@ -618,6 +618,35 @@ struct CaptureVerificationTests {
                 "Should find multiple text blocks in visible area")
         #expect(ocrResult.wordCount > 10,
                 "Should find significant word count in visible area")
+    }
+
+    @Test("OCR captures newly visible lower text after scrolling in scrollable window",
+          .tags(.ocr, .capture),
+          .enabled(if: isScreenRecordingAvailable))
+    @MainActor
+    func scrollingTextOCRAfterScroll() async throws {
+        // Functional: After scrolling a viewport, OCR should recognize text that was previously below the fold
+        // Technical: Create scrollable reference window → scroll to HOTEL paragraph → capture → OCR → verify lower keywords appear
+        let screen = NSScreen.main!
+        let ref = OCRReferenceWindow.scrollingText(on: screen)
+        try await Task.sleep(for: .milliseconds(500))
+
+        ref.scrollToParagraph(containing: "HOTEL")
+        try await Task.sleep(for: .milliseconds(300))
+
+        let provider = ScreenCaptureKitProvider()
+        let result = try await provider.captureRegion(ref.viewportScreenRect)
+        ref.close()
+
+        let engine = OCREngine()
+        let ocrResult = try await engine.recognizeText(in: result.image)
+        let fullText = ocrResult.fullText.uppercased()
+
+        let lowerVisible = fullText.contains("HOTEL") || fullText.contains("INDIA") || fullText.contains("JULIET")
+        #expect(lowerVisible,
+                "After scrolling, lower previously hidden content should become visible: \(ocrResult.fullText)")
+        #expect(!fullText.contains("ALPHA"),
+                "After scrolling to lower content, the original top paragraph should no longer be required in the viewport: \(ocrResult.fullText)")
     }
 
     // MARK: - Figure Detection Tests
@@ -1111,6 +1140,7 @@ struct CaptureVerificationTests {
 @MainActor
 private final class OCRReferenceWindow {
     let window: NSWindow
+    private let scrollingView: OCRScrollingTextView?
 
     static func singleParagraph(on screen: NSScreen) -> OCRReferenceWindow {
         let content = "CortexVision OCR Test\nThis is a single paragraph of text used to verify\nthat the OCR engine correctly recognizes and extracts\ntext content from captured screen regions."
@@ -1165,6 +1195,7 @@ private final class OCRReferenceWindow {
     }
 
     private init(on screen: NSScreen, size: CGSize, content: String?) {
+        self.scrollingView = nil
         let screenFrame = screen.frame
         let origin = NSPoint(
             x: screenFrame.midX - size.width / 2,
@@ -1190,6 +1221,7 @@ private final class OCRReferenceWindow {
     }
 
     private init(on screen: NSScreen, size: CGSize, columns: [String]) {
+        self.scrollingView = nil
         let screenFrame = screen.frame
         let origin = NSPoint(
             x: screenFrame.midX - size.width / 2,
@@ -1215,6 +1247,7 @@ private final class OCRReferenceWindow {
     }
 
     private init(on screen: NSScreen, size: CGSize, textAndFigure: Bool) {
+        self.scrollingView = nil
         let screenFrame = screen.frame
         let origin = NSPoint(
             x: screenFrame.midX - size.width / 2,
@@ -1240,6 +1273,7 @@ private final class OCRReferenceWindow {
     }
 
     private init(on screen: NSScreen, size: CGSize, paragraphs: [String]) {
+        self.scrollingView = nil
         let screenFrame = screen.frame
         let origin = NSPoint(
             x: screenFrame.midX - size.width / 2,
@@ -1282,11 +1316,22 @@ private final class OCRReferenceWindow {
         window.level = .floating
 
         let view = OCRScrollingTextView(frame: NSRect(origin: .zero, size: size), paragraphs: scrollingParagraphs)
+        self.scrollingView = view
         window.contentView = view
         window.makeKeyAndOrderFront(nil)
         window.orderFrontRegardless()
         view.display()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    var viewportScreenRect: CGRect {
+        scrollingView?.viewportScreenRect(in: window) ?? window.frame
+    }
+
+    func scrollToParagraph(containing keyword: String) {
+        scrollingView?.scrollToParagraph(containing: keyword)
+        window.displayIfNeeded()
+        window.contentView?.displayIfNeeded()
     }
 
     func close() {
@@ -1384,20 +1429,22 @@ private final class OCRTextAndFigureView: NSView {
 
 private final class OCRScrollingTextView: NSView {
     let paragraphs: [String]
+    let scrollView: NSScrollView
+    let textView: NSTextView
 
     init(frame: NSRect, paragraphs: [String]) {
         self.paragraphs = paragraphs
+        self.scrollView = NSScrollView(frame: frame)
+        self.textView = NSTextView(frame: NSRect(origin: .zero, size: CGSize(width: frame.width - 20, height: 0)))
         super.init(frame: frame)
 
         // Create a scroll view with a text view containing all paragraphs.
         // The text content is taller than the frame, so a scrollbar appears.
-        let scrollView = NSScrollView(frame: bounds)
         scrollView.autoresizingMask = [.width, .height]
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.borderType = .noBorder
 
-        let textView = NSTextView(frame: NSRect(origin: .zero, size: CGSize(width: frame.width - 20, height: 0)))
         textView.isEditable = false
         textView.isSelectable = false
         textView.backgroundColor = .white
@@ -1434,6 +1481,21 @@ private final class OCRScrollingTextView: NSView {
     }
 
     @available(*, unavailable) required init?(coder: NSCoder) { nil }
+
+    func viewportScreenRect(in window: NSWindow) -> CGRect {
+        let rectInWindow = convert(scrollView.frame, to: nil)
+        return window.convertToScreen(rectInWindow)
+    }
+
+    func scrollToParagraph(containing keyword: String) {
+        let nsString = textView.string as NSString
+        let range = nsString.range(of: keyword, options: [.caseInsensitive])
+        guard range.location != NSNotFound else { return }
+        textView.scrollRangeToVisible(range)
+        scrollView.reflectScrolledClipView(scrollView.contentView)
+        textView.displayIfNeeded()
+        displayIfNeeded()
+    }
 }
 
 private final class OCRParagraphsView: NSView {

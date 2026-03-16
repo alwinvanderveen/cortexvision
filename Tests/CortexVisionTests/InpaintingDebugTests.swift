@@ -278,14 +278,14 @@ struct InpaintingDebugTests {
         // Inpaint each figure with overlay text
         for (figIdx, textBlocks) in overlayTextByFigure {
             let figure = figureResult.figures[figIdx]
-            let textBounds = textBlocks.map(\.bounds)
+            let figureTextBounds = textBlocks.map(\.bounds)
 
-            print("REAL: Inpainting figure \(figIdx) (\(figure.label)) with \(textBounds.count) text blocks")
+            print("REAL: Inpainting figure \(figIdx) (\(figure.label)) with \(figureTextBounds.count) text blocks")
 
             guard let inpainted = pipeline.removeText(
                 from: image,
                 figureBounds: figure.bounds,
-                textBounds: textBounds
+                textBounds: figureTextBounds
             ) else {
                 Issue.record("Inpainting failed for figure \(figIdx)")
                 continue
@@ -303,7 +303,7 @@ struct InpaintingDebugTests {
 
             // Verify text regions are no longer dark/contrasting
             // Sample the text areas in the inpainted result
-            for (i, tb) in textBounds.enumerated() {
+            for (i, tb) in figureTextBounds.enumerated() {
                 // Convert text Vision bounds to pixel coords in inpainted figure
                 // Text bounds are full-image Vision coords; figure is a crop
                 let figPixelX = figure.bounds.origin.x * CGFloat(image.width)
@@ -404,12 +404,27 @@ struct InpaintingDebugTests {
             let preservedPct = Double(preservedPixels) / Double(totalPixels) * 100
             let avgPreserveDiff = preservedPixels > 0 ? totalPreserveDiff / Double(preservedPixels) : 0
             let redReduction = redPixelsBefore > 0 ? (1.0 - Double(redPixelsAfter) / Double(redPixelsBefore)) * 100 : 100
+            let localBadgeReduction = redPixelsBefore > 1000
+                ? try? strongestBadgeLocalRedReduction(
+                    sourceImage: image,
+                    figureBounds: figure.bounds,
+                    textBounds: textBlocks.map(\.bounds),
+                    inpaintedFigure: inpainted
+                )
+                : nil
 
             print("REAL: fig[\(figIdx)] pixel comparison:")
             print("  changed: \(changedPixels) (\(String(format: "%.1f", changedPct))%)")
             print("  preserved: \(preservedPixels) (\(String(format: "%.1f", preservedPct))%)")
             print("  avg preserve diff: \(String(format: "%.1f", avgPreserveDiff))")
             print("  red pixels: before=\(redPixelsBefore) after=\(redPixelsAfter) reduction=\(String(format: "%.0f", redReduction))%")
+
+            if let localReduction = localBadgeReduction {
+                print(
+                    "  local badge red reduction: before=\(localReduction.before) "
+                    + "after=\(localReduction.after) reduction=\(String(format: "%.0f", localReduction.reduction))%"
+                )
+            }
 
             // Assertions:
             // 1. Most of the figure should be preserved (>70% unchanged)
@@ -421,15 +436,95 @@ struct InpaintingDebugTests {
             // 3. Preserved pixels should be very close to original
             #expect(avgPreserveDiff < 5, "fig[\(figIdx)]: preserved pixels should be close to original, avgDiff=\(String(format: "%.1f", avgPreserveDiff))")
 
-            // 4. Red button pixels should be mostly gone (>80% reduction)
-            // Only check for figures with significant red content (>1000 pixels = actual button)
+            // 4. Badge/button residue should be mostly gone in the local OCR-anchored ROI.
+            // Figure-wide red pixel counts are too coarse once unrelated red photo content is present.
             if redPixelsBefore > 1000 {
-                #expect(redReduction > 80, "fig[\(figIdx)]: red button pixels should be >80% reduced, got \(String(format: "%.0f", redReduction))%")
+                #expect(localBadgeReduction != nil,
+                        "fig[\(figIdx)]: expected a local OCR-anchored badge ROI for red overlay validation")
+                if let localBadgeReduction {
+                    #expect(localBadgeReduction.reduction > 80,
+                            "fig[\(figIdx)]: local badge red pixels should be >80% reduced, got \(String(format: "%.0f", localBadgeReduction.reduction))%")
+                }
             }
 
             origPtr.deallocate()
             inpPtr.deallocate()
         }
+    }
+
+    @Test("TC-5b.52: Real image residue analysis rejects large weakly-coupled photo blobs", .tags(.figures),
+          .enabled(if: isLaMaModelAvailable))
+    func realImageResidueAnalyzerRejectsWeaklyCoupledLargeBlobs() async throws {
+        guard let image = loadTestImage("testMultipleImageNews2") else {
+            Issue.record("Could not load testMultipleImageNews2.png")
+            return
+        }
+
+        let ocrEngine = OCREngine()
+        let ocrResult = try await ocrEngine.recognizeText(in: image)
+        let figureDetector = FigureDetector()
+        let figureResult = try await figureDetector.detectFigures(
+            in: image,
+            textBounds: ocrResult.textBlocks.map(\.bounds)
+        )
+
+        let overlayAnalyzer = HeuristicOverlayTextAnalyzer()
+        let pageBgColor = sampleBg(image)
+        var overlayBoundsByFigure: [Int: [CGRect]] = [:]
+
+        for block in ocrResult.textBlocks {
+            for (figIdx, figure) in figureResult.figures.enumerated() {
+                guard block.bounds.intersects(figure.bounds) else { continue }
+                let cls = overlayAnalyzer.classify(
+                    text: block.bounds,
+                    figure: figure.bounds,
+                    in: image,
+                    pageBgColor: pageBgColor
+                )
+                guard cls == .overlay || cls == .edgeOverlay else { continue }
+                overlayBoundsByFigure[figIdx, default: []].append(block.bounds)
+                break
+            }
+        }
+
+        guard let targetFigureIndex = overlayBoundsByFigure.keys.max(),
+              let overlayBounds = overlayBoundsByFigure[targetFigureIndex],
+              let figureCrop = cropFigure(from: image, figureBounds: figureResult.figures[targetFigureIndex].bounds),
+              let relativeBounds = relativeTextBounds(
+                overlayBounds,
+                imageSize: CGSize(width: image.width, height: image.height),
+                figureBounds: figureResult.figures[targetFigureIndex].bounds
+              ),
+              let textMask = TextMaskGenerator().generateMask(
+                textBounds: relativeBounds,
+                imageSize: CGSize(width: figureCrop.width, height: figureCrop.height)
+              ) else {
+            Issue.record("Could not prepare real-image residue analysis inputs")
+            return
+        }
+
+        let inpainter = try LaMaInpainter()
+        let pass1 = try inpainter.inpaint(image: figureCrop, mask: textMask)
+        let residueAnalyzer = ResidueAnalyzer(minConfidence: 0.50, debug: true)
+        let result = residueAnalyzer.analyze(
+            originalCrop: figureCrop,
+            pass1Result: pass1,
+            textBounds: relativeBounds
+        )
+
+        let suspiciousAccepted = result.candidates.filter { candidate in
+            candidate.pixelCount >= 2000
+                && candidate.textCoverage < 0.05
+                && candidate.pass1DeltaScore < 0.15
+        }
+
+        #expect(
+            suspiciousAccepted.isEmpty,
+            """
+            Large accepted candidates with almost no text coverage and weak pass-1 evidence indicate remote photo blobs leaking into residue support.
+            Suspicious accepted candidates: \(suspiciousAccepted.map { "bounds=\($0.bounds) area=\($0.pixelCount) textCov=\(String(format: "%.2f", $0.textCoverage)) delta=\(String(format: "%.2f", $0.pass1DeltaScore))" }.joined(separator: "; "))
+            """
+        )
     }
 
     /// Renders CGImage to raw RGBA bitmap (row 0 = top). Caller must deallocate.
@@ -459,5 +554,130 @@ struct InpaintingDebugTests {
         guard let data = ctx.data else { return (255, 255, 255) }
         let ptr = data.bindMemory(to: UInt8.self, capacity: image.width * image.height * 4)
         return FigureDetector.sampleBackgroundColor(ptr: ptr, width: image.width, height: image.height)
+    }
+
+    private func strongestBadgeLocalRedReduction(
+        sourceImage: CGImage,
+        figureBounds: CGRect,
+        textBounds: [CGRect],
+        inpaintedFigure: CGImage
+    ) throws -> (before: Int, after: Int, reduction: Double)? {
+        guard let figureCrop = cropFigure(from: sourceImage, figureBounds: figureBounds),
+              let relativeBounds = relativeTextBounds(
+                textBounds,
+                imageSize: CGSize(width: sourceImage.width, height: sourceImage.height),
+                figureBounds: figureBounds
+              ),
+              let textMask = TextMaskGenerator().generateMask(
+                textBounds: relativeBounds,
+                imageSize: CGSize(width: figureCrop.width, height: figureCrop.height)
+              ) else {
+            return nil
+        }
+
+        let pass1 = try LaMaInpainter().inpaint(image: figureCrop, mask: textMask)
+        let residueAnalyzer = ResidueAnalyzer(debug: false)
+        let analysis = residueAnalyzer.analyze(
+            originalCrop: figureCrop,
+            pass1Result: pass1,
+            textBounds: relativeBounds
+        )
+
+        guard let candidate = analysis.candidates
+            .filter({ $0.textCoverage > 0.5 })
+            .max(by: { $0.boundaryContrast < $1.boundaryContrast }) else {
+            return nil
+        }
+
+        let radius = CGFloat(candidate.dilationRadius)
+        let roi = candidate.bounds.insetBy(dx: -radius, dy: -radius)
+        let clamped = roi.intersection(CGRect(
+            x: 0, y: 0,
+            width: figureCrop.width,
+            height: figureCrop.height
+        ))
+        guard !clamped.isEmpty,
+              let origPtr = renderToBitmap(figureCrop, width: figureCrop.width, height: figureCrop.height),
+              let inpPtr = renderToBitmap(inpaintedFigure, width: inpaintedFigure.width, height: inpaintedFigure.height) else {
+            return nil
+        }
+        defer {
+            origPtr.deallocate()
+            inpPtr.deallocate()
+        }
+
+        let minX = Int(clamped.minX)
+        let maxX = Int(clamped.maxX)
+        let minY = Int(clamped.minY)
+        let maxY = Int(clamped.maxY)
+        var before = 0
+        var after = 0
+
+        for py in minY..<maxY {
+            for px in minX..<maxX {
+                let offset = (py * figureCrop.width + px) * 4
+                let origR = Int(origPtr[offset])
+                let origG = Int(origPtr[offset + 1])
+                let origB = Int(origPtr[offset + 2])
+                let inpR = Int(inpPtr[offset])
+                let inpG = Int(inpPtr[offset + 1])
+                let inpB = Int(inpPtr[offset + 2])
+                if origR > 150, origG < 80, origB < 80 { before += 1 }
+                if inpR > 150, inpG < 80, inpB < 80 { after += 1 }
+            }
+        }
+
+        let reduction = before > 0 ? (1.0 - Double(after) / Double(before)) * 100 : 100
+        return (before, after, reduction)
+    }
+
+    private func cropFigure(from image: CGImage, figureBounds: CGRect) -> CGImage? {
+        let imgW = CGFloat(image.width)
+        let imgH = CGFloat(image.height)
+        let figurePixelRect = CGRect(
+            x: figureBounds.origin.x * imgW,
+            y: (1.0 - figureBounds.origin.y - figureBounds.height) * imgH,
+            width: figureBounds.width * imgW,
+            height: figureBounds.height * imgH
+        ).integral
+        let clamped = figurePixelRect.intersection(CGRect(x: 0, y: 0, width: imgW, height: imgH))
+        guard !clamped.isEmpty else { return nil }
+        return image.cropping(to: clamped)
+    }
+
+    private func relativeTextBounds(
+        _ textBounds: [CGRect],
+        imageSize: CGSize,
+        figureBounds: CGRect
+    ) -> [CGRect]? {
+        let imgW = imageSize.width
+        let imgH = imageSize.height
+        let figurePixelRect = CGRect(
+            x: figureBounds.origin.x * imgW,
+            y: (1.0 - figureBounds.origin.y - figureBounds.height) * imgH,
+            width: figureBounds.width * imgW,
+            height: figureBounds.height * imgH
+        ).integral
+        let clampedFigure = figurePixelRect.intersection(CGRect(x: 0, y: 0, width: imgW, height: imgH))
+        guard !clampedFigure.isEmpty else { return nil }
+
+        let relative = textBounds.compactMap { textRect -> CGRect? in
+            let textPixel = CGRect(
+                x: textRect.origin.x * imgW,
+                y: (1.0 - textRect.origin.y - textRect.height) * imgH,
+                width: textRect.width * imgW,
+                height: textRect.height * imgH
+            )
+            let intersection = textPixel.intersection(clampedFigure)
+            guard !intersection.isEmpty else { return nil }
+
+            let relX = (intersection.origin.x - clampedFigure.origin.x) / clampedFigure.width
+            let relY = (intersection.origin.y - clampedFigure.origin.y) / clampedFigure.height
+            let relW = intersection.width / clampedFigure.width
+            let relH = intersection.height / clampedFigure.height
+            return CGRect(x: relX, y: 1.0 - relY - relH, width: relW, height: relH)
+        }
+
+        return relative.isEmpty ? nil : relative
     }
 }

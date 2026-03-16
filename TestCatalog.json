@@ -669,9 +669,18 @@
     "id": "TC-4.3i",
     "category": "Verification",
     "functional": "When a window has a scrollbar, OCR only recognizes text visible in the viewport, not content scrolled out of view",
-    "technical": "Create NSScrollView with 10 uniquely-keyed paragraphs in a 300pt window, capture region, verify top 3 paragraphs (ALPHA, BRAVO, CHARLIE) are recognized and bottom 3 (HOTEL, INDIA, JULIET) are not",
-    "input": "600x300 window with NSScrollView containing 10 paragraphs with unique keywords",
+    "technical": "Create NSScrollView with 10 uniquely-keyed paragraphs in a 300pt window, capture the visible scroll viewport, and verify top 3 paragraphs (ALPHA, BRAVO, CHARLIE) are recognized while bottom 3 (HOTEL, INDIA, JULIET) are not",
+    "input": "600x300 scrollable reference window; region capture targets the visible viewport instead of the full window frame",
     "expectedOutput": "ALPHA, BRAVO, CHARLIE found; HOTEL, INDIA, JULIET not found; multiple text blocks; >10 words",
+    "tags": ["ocr", "capture"]
+  },
+  "OCR captures newly visible lower text after scrolling in scrollable window": {
+    "id": "TC-4.3j",
+    "category": "Verification",
+    "functional": "After scrolling within a scrollable window, OCR recognizes the newly visible lower viewport content instead of only the original top content",
+    "technical": "Create NSScrollView with 10 uniquely-keyed paragraphs, scroll to a lower keyword, capture the visible viewport, and verify lower keywords become recognizable",
+    "input": "Scrollable 600x300 reference window, programmatically scrolled to lower content before region capture",
+    "expectedOutput": "At least one lower keyword such as HOTEL, INDIA, or JULIET is recognized after scrolling, and the original top paragraph is no longer required in the viewport",
     "tags": ["ocr", "capture"]
   },
   "Text to the right of figure → adjacentRight": {
@@ -1159,5 +1168,41 @@
     "input": "Preview image with two figures and a distinct replacement crop composited into the first figure bounds",
     "expectedOutput": "Cropping the recomposited preview at the first figure bounds returns the replacement crop, while the second figure bounds remain unchanged",
     "tags": ["core", "ui", "figures"]
+  },
+  "TC-5b.49: Low-saturation badge near OCR anchor is still detectable after pass 1": {
+    "id": "TC-5b.49",
+    "category": "Inpainting",
+    "functional": "A low-saturation overlay badge near figure text remains removable even when color alone is a weak clue",
+    "technical": "ResidueAnalyzer combines OCR anchoring and pass-1 coherence signals so a coherent low-saturation badge is still accepted after text removal",
+    "input": "Synthetic figure crop with a dark gray badge, white text gap, and pass-1 result that fills the gap",
+    "expectedOutput": "At least one candidate is accepted with strong OCR anchoring and non-zero pass-1 delta evidence",
+    "tags": ["core", "figures", "inpainting"]
+  },
+  "TC-5b.50: Thin strip near OCR anchor is rejected as UI residue": {
+    "id": "TC-5b.50",
+    "category": "Inpainting",
+    "functional": "Long thin false positives near figure text are not treated as removable badge/background residue",
+    "technical": "ResidueAnalyzer shape-aware scoring suppresses thin strip components even when they are close to the OCR anchor and become more coherent after pass 1",
+    "input": "Synthetic figure crop with a tall narrow strip crossing the OCR anchor and a pass-1 result that fills the text gap",
+    "expectedOutput": "No candidate is accepted for pass 2 residue removal",
+    "tags": ["core", "figures", "inpainting"]
+  },
+  "TC-5b.51: Remote dark photo blob near compact OCR anchor is rejected as residue": {
+    "id": "TC-5b.51",
+    "category": "Inpainting",
+    "functional": "A nearby photo-like blob is not treated as removable overlay residue just because it shares color with a compact badge near text",
+    "technical": "ResidueAnalyzer keeps a compact local badge candidate but rejects a separate remote component with weak text coupling under the current compact-anchor rules",
+    "input": "Synthetic figure crop with a compact badge around OCR text plus a separate same-colored blob within the search neighborhood",
+    "expectedOutput": "The local badge remains detectable while the remote blob is not accepted for pass 2 residue removal",
+    "tags": ["core", "figures", "inpainting"]
+  },
+  "TC-5b.52: Real image residue analysis rejects large weakly-coupled photo blobs": {
+    "id": "TC-5b.52",
+    "category": "Inpainting",
+    "functional": "Real-image residue analysis does not expand pass-2 support into large photo regions that are only loosely related to overlay text",
+    "technical": "ResidueAnalyzer rejects accepted candidates that are large, have near-zero text coverage, and have weak pass-1 delta evidence on the real-image figure crop",
+    "input": "Real image fixture testMultipleImageNews2 with OCR-derived overlay bounds and pass-1 inpaint output",
+    "expectedOutput": "No large weakly-coupled photo blob is accepted as residue support",
+    "tags": ["core", "figures", "inpainting"]
   }
 }

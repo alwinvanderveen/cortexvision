@@ -286,6 +286,59 @@ Als gebruiker wil ik dat na een capture automatisch alle tekst wordt herkend en 
 
 ---
 
+## UC-4 Bugfix: Scrollable Window OCR Viewport Stability
+
+**Status:** `DONE`
+
+### Beschrijving
+Als ontwikkelaar wil ik dat OCR op een scrollable referentievenster alle volledig zichtbare tekst aan de boven- en onderrand van het viewport betrouwbaar kan herkennen, zodat capture- en OCR-validatie niet falen door clipping aan de rand van het zichtbare venster.
+
+### Actors
+- Ontwikkelaar
+- Systeem (capture + OCR verificatie)
+
+### Precondities
+- Er is een lokaal referentievenster met een `NSScrollView`
+- Screen recording permissie is beschikbaar voor integration tests
+- OCR pipeline uit UC-4 is operationeel
+
+### Flow
+1. Test opent een scrollable referentievenster met meerdere paragrafen en unieke sleutelwoorden.
+2. Systeem capturt het zichtbare viewport zonder scrollactie.
+3. OCR valideert dat volledig zichtbare toptekst compleet herkenbaar is.
+4. Test scrollt daarna naar een lager deel van dezelfde content.
+5. Systeem capturt opnieuw het zichtbare viewport.
+6. OCR valideert dat nu eerder onzichtbare onderliggende paragrafen herkenbaar zijn en eerder zichtbare toptekst niet langer vereist is.
+
+### Postcondities
+- Scrollable viewport-captures snijden geen volledig zichtbare tekst af aan de bovenrand
+- OCR-verificatie dekt zowel een initiële top-view als een later gescrollde bottom-view
+- De test blijft de echte zichtbaarheid van het viewport verifiëren, niet een versoepelde OCR-verwachting
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| Scrollable reference window layout | `PRODUCTIE` | Het testvenster moet stabiele, realistische viewport-content leveren |
+| Region capture van het zichtbare viewport | `PRODUCTIE` | Capture moet exact de zichtbare content afbeelden zonder clipping aan de rand |
+| OCR-verificatie op top-view | `PRODUCTIE` | Volledig zichtbare toptekst moet herkenbaar zijn |
+| OCR-verificatie na scroll naar lager viewport | `PRODUCTIE` | Ook later zichtbare content moet valideerbaar zijn |
+| Debug/observability voor viewport clipping | `PRODUCTIE` | Nodig om echte capture/OCR-oorzaak te lokaliseren |
+
+### Acceptatiecriteria
+- [x] De eerste zichtbare paragraaf aan de bovenkant van het viewport wordt volledig genoeg gecaptured zodat het sleutelwoord herkenbaar is
+- [x] `BRAVO` en `CHARLIE` blijven herkenbaar in de initiële top-view
+- [x] `HOTEL`, `INDIA` en `JULIET` blijven afwezig wanneer ze nog onder de fold zitten
+- [x] Na scrollen naar het lagere viewport wordt eerder onzichtbare onderste content herkenbaar in OCR
+- [x] De fix stabiliseert de viewport-capture zonder de OCR-test te versoepelen om fout gedrag te accepteren
+
+### Testcases
+| ID | Beschrijving | Verwacht resultaat |
+|----|-------------|-------------------|
+| TC-4.scroll.1 | Capture van top-view van scrollable referentievenster | `ALPHA`, `BRAVO`, `CHARLIE` herkenbaar; content onder de fold afwezig |
+| TC-4.scroll.2 | Scroll naar lager viewport en capture opnieuw | Ten minste één eerder onzichtbaar sleutelwoord uit de onderste helft herkenbaar; capture bevat alleen zichtbaar viewport |
+
+---
+
 ## UC-5: Figuur Detectie & Extractie
 
 **Status:** `DONE`
@@ -660,6 +713,36 @@ Tekst op figuren visueel onderscheiden, koppelen aan de bijbehorende figuur, en 
 - [ ] `enhanceMaskWithUIElements` volledig verwijderd
 - [ ] Totale inpainting duurt <3 seconden per figuur op Apple Silicon (2 passes)
 
+#### Deelstap 3a: False-Positive Suppression & Debug-First Diagnostics
+
+**Status:** `IN PROGRESS`
+
+**Beschrijving**
+Als gebruiker wil ik dat overlay-retouch nooit niet-gerelateerde foto-inhoud zoals ramen, dieren of andere egale objecten verwijdert wanneer tekst slechts los of op afstand aanwezig is, zodat inpainting alleen de bedoelde UI-overlay weghaalt en de onderliggende foto intact blijft.
+
+**Strategie**
+- **Debug-first:** geen aannames. Root cause wordt gelokaliseerd met parameteriseerbare debug-output op candidate-, mask- en validation-niveau.
+- **Striktere OCR-anchoring:** residue-candidates moeten niet alleen "in de buurt" van tekst liggen, maar lokaal ruimtelijk gekoppeld zijn aan de OCR-zone.
+- **False-positive suppression:** egale foto-objecten die wel kleurmatig lijken op residue maar geen sterke text-coupling hebben worden hard verworpen.
+- **Semantic QA harness:** optionele semantische voor/na evaluator voor diagnostiek. Niet blokkerend voor CI zolang de evaluator nog niet deterministisch genoeg is.
+
+### Classificatie per onderdeel
+| Onderdeel | Classificatie | Toelichting |
+|-----------|--------------|-------------|
+| Parameteriseerbare debug-output voor evidence mask, candidates, anchor-coupling, reject reasons en pass1/pass2 deltas | `PRODUCTIE` | Nodig voor herhaalbare root-cause analyse en toekomstige regressies |
+| Debug-flags via environment/config i.p.v. ad-hoc print-statements | `PRODUCTIE` | Herbruikbaar, consistent en veilig voor toekomstig debugwerk |
+| Regressietests voor remote-anchor false positives op synthetische en real-image fixtures | `PRODUCTIE` | Harde kwaliteitsgate voor deze failure mode |
+| Striktere text-coupling / local support gating in `ResidueAnalyzer` | `PRODUCTIE` | Moet voorkomen dat losse tekst op afstand foto-objecten triggert |
+| Semantic before/after evaluator met visual-intelligence beschrijving | `SCAFFOLD` | Waardevol als semantische alarmbel, maar nog niet deterministisch genoeg als primaire CI-waarheid. Vervangplan: promoveren naar `PRODUCTIE` zodra een lokaal vastgepinde evaluator met stabiel schema en reproduceerbare outputs beschikbaar is |
+
+### Acceptatiecriteria
+- [ ] Debug-output kan per run worden ingeschakeld zonder codewijzigingen
+- [ ] Debug-output toont minimaal: evidence-mask area, candidate bounds, anchor distance/coupling, accepted/rejected candidates, reject reasons en pass1/pass2 local deltas
+- [ ] Een tekstfragment dat alleen los of op afstand bij een egaal foto-object staat, mag geen residue-candidate voor dat foto-object opleveren
+- [ ] De bestaande badge/button case blijft werken na false-positive suppressie
+- [ ] Bij twijfel blijft `uncertain => pass 1 resultaat` gelden
+- [ ] Semantic QA harness produceert een diagnostisch voor/na rapport zonder de hoofdtestsuite te destabiliseren
+
 ### Testcases — Unit (draaien overal, ook CI)
 
 **Deelstap 1: Unified Exclusion**
@@ -961,7 +1044,7 @@ UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                                               UC-5a [DONE]
                                                                        │
                                                                        ▼
-                                                              UC-5b [APPROVED] ◄── NEXT
+                                                              UC-5b [IN PROGRESS] ◄── HUIDIG
                                                                        │
                                               ┌────────────────────────┘
                                               ▼
@@ -971,7 +1054,7 @@ UC-0 [DONE] ──► UC-1 [DONE] ──► UC-2 [DONE] ──► UC-3 [DONE]
                                               UC-8 [BACKLOG] (App Store)
 ```
 
-UC-5b (unified exclusion + overlay-tekst + inpainting) is de eerstvolgende prioriteit.
+UC-5b (unified exclusion + overlay-tekst + inpainting) is de huidige prioriteit.
 UC-5b deelstap 1-2 (exclusion + classificatie) vereist UC-5a. Deelstap 3 (LaMa) vereist deelstap 2.
 UC-4a en UC-4b zijn afhankelijk van UC-4, kunnen parallel met UC-5b.
 UC-6 en UC-7 kunnen deels parallel worden ontwikkeld na UC-5b.
