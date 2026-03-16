@@ -12,7 +12,7 @@ public struct TextMaskGenerator {
     /// Covers UI elements like buttons/badges that extend beyond text glyphs.
     private let proportionalPadding: CGFloat
 
-    public init(minPadding: Int = 4, proportionalPadding: CGFloat = 1.0) {
+    public init(minPadding: Int = 4, proportionalPadding: CGFloat = 0.6) {
         self.minPadding = minPadding
         self.proportionalPadding = proportionalPadding
     }

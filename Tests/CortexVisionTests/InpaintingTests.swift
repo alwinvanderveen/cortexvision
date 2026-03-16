@@ -28,6 +28,23 @@ struct InpaintingTests {
         return context.makeImage()!
     }
 
+    /// Creates a grayscale support mask with white pixels in the provided rectangles.
+    private func supportMask(width: Int, height: Int, whiteRects: [CGRect]) -> CGImage {
+        let context = CGContext(
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        )!
+        context.setFillColor(gray: 0, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(gray: 1, alpha: 1)
+        for rect in whiteRects {
+            context.fill(rect)
+        }
+        return context.makeImage()!
+    }
+
     /// Reads pixel value at (x, y) from a grayscale CGImage.
     private func grayscalePixel(_ image: CGImage, x: Int, y: Int) -> UInt8 {
         let context = CGContext(
@@ -269,6 +286,73 @@ struct InpaintingTests {
         let originalBrightness = (200.0 + 100.0 + 50.0) / 3.0  // ~116.7
         let diff = abs(farBrightness - originalBrightness)
         #expect(diff < 30, "Pixels far from mask should be close to original, diff=\(diff)")
+    }
+
+    // MARK: - TC-5b.20a/b: Pass-2 local validation core behavior
+
+    @Test("TC-5b.20a: Local incremental damage ignores changes inside expanded support", .tags(.core))
+    func localIncrementalDamageIgnoresSupportInterior() {
+        let pass1 = solidImage(width: 100, height: 100, r: 180, g: 180, b: 180)
+
+        let ctx = CGContext(
+            data: nil, width: 100, height: 100,
+            bitsPerComponent: 8, bytesPerRow: 100 * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.draw(pass1, in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        ctx.fill(CGRect(x: 30, y: 30, width: 30, height: 30))
+        let pass2 = ctx.makeImage()!
+
+        let focusBounds = CGRect(x: 30, y: 30, width: 30, height: 30)
+        let mask = supportMask(width: 100, height: 100, whiteRects: [focusBounds])
+
+        let damagePct = FigureInpaintingPipeline.localIncrementalDamage(
+            pass1: pass1,
+            pass2: pass2,
+            supportMask: mask,
+            focusBounds: focusBounds,
+            outerMargin: 20
+        )
+
+        #expect(damagePct != nil)
+        #expect((damagePct ?? 999) < 0.1,
+                "Changes inside support should not count as collateral damage, got \(String(describing: damagePct))%")
+    }
+
+    @Test("TC-5b.20b: Local incremental damage counts changes outside expanded support", .tags(.core))
+    func localIncrementalDamageCountsOutsideSupport() {
+        let pass1 = solidImage(width: 100, height: 100, r: 180, g: 180, b: 180)
+
+        let ctx = CGContext(
+            data: nil, width: 100, height: 100,
+            bitsPerComponent: 8, bytesPerRow: 100 * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        )!
+        ctx.draw(pass1, in: CGRect(x: 0, y: 0, width: 100, height: 100))
+        ctx.setFillColor(CGColor(red: 1, green: 0, blue: 0, alpha: 1))
+        ctx.fill(CGRect(x: 30, y: 30, width: 30, height: 30))
+        // Add collateral change just outside the support area.
+        ctx.setFillColor(CGColor(red: 0, green: 0, blue: 1, alpha: 1))
+        ctx.fill(CGRect(x: 64, y: 30, width: 12, height: 30))
+        let pass2 = ctx.makeImage()!
+
+        let focusBounds = CGRect(x: 30, y: 30, width: 30, height: 30)
+        let mask = supportMask(width: 100, height: 100, whiteRects: [focusBounds])
+
+        let damagePct = FigureInpaintingPipeline.localIncrementalDamage(
+            pass1: pass1,
+            pass2: pass2,
+            supportMask: mask,
+            focusBounds: focusBounds,
+            outerMargin: 20
+        )
+
+        #expect(damagePct != nil)
+        #expect((damagePct ?? 0) > 0.1,
+                "Changes outside support should count as collateral damage, got \(String(describing: damagePct))%")
     }
 
     // MARK: - TC-5b.21: FigureInpaintingPipeline — round-trip produces correct dimensions

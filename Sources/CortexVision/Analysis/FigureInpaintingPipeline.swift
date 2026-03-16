@@ -1,25 +1,37 @@
 import CoreGraphics
 import Foundation
 
-/// Orchestrates the full inpainting workflow: mask generation → crop → resize → inpaint → composite.
+/// Orchestrates the two-pass inpainting workflow for overlay removal on figures.
 ///
-/// When a user excludes overlay-text from a figure, this pipeline:
-/// 1. Generates a binary mask from the text block bounds
-/// 2. Crops the figure region (with padding) from the source image
-/// 3. Resizes crop + mask to 512×512 for LaMa
-/// 4. Runs LaMa inpainting
-/// 5. Resizes result back to original crop size
-/// 6. Composites the inpainted region back into the source image
+/// Pass 1: Text-only mask → LaMa removes text glyphs.
+/// Residue analysis: OCR-anchored multi-signal detection of remaining UI element backgrounds.
+/// Pass 2 (conditional): Expanded mask (text + UI blobs) → LaMa on original crop.
+/// Validation: local (context-ring) + global (preserve metrics). Failure → fallback to pass 1.
+///
+/// The pipeline is generic: it works for any UI overlay color, shape, and text offset.
+/// No architecture or threshold depends on a specific reference image.
 public final class FigureInpaintingPipeline: @unchecked Sendable {
+
+    private struct ExpandedMaskArtifacts {
+        let mask: CGImage
+        let expandedBounds: [CGRect]
+    }
 
     private let inpainter: LaMaInpainter
     private let maskGenerator: TextMaskGenerator
+    private let residueAnalyzer: ResidueAnalyzer
     private let debug: Bool
 
-    public init(inpainter: LaMaInpainter, maskGenerator: TextMaskGenerator = TextMaskGenerator(), debug: Bool = false) {
+    public init(
+        inpainter: LaMaInpainter,
+        maskGenerator: TextMaskGenerator = TextMaskGenerator(),
+        residueAnalyzer: ResidueAnalyzer? = nil,
+        debug: Bool = false
+    ) {
         self.inpainter = inpainter
         self.maskGenerator = maskGenerator
         self.debug = debug
+        self.residueAnalyzer = residueAnalyzer ?? ResidueAnalyzer(debug: debug)
     }
 
     /// Convenience initializer that loads the bundled LaMa model.
@@ -30,13 +42,13 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
         self.init(inpainter: inpainter, debug: debug)
     }
 
-    /// Removes text from a figure by inpainting the text regions.
+    /// Removes overlay content (text + UI element backgrounds) from a figure.
     ///
     /// - Parameters:
     ///   - image: The full source captured image.
     ///   - figureBounds: Normalized bounds of the figure in Vision coordinates (bottom-left origin).
     ///   - textBounds: Normalized bounds of text blocks to remove, in Vision coordinates.
-    /// - Returns: A new figure CGImage with text removed, or nil if inpainting fails.
+    /// - Returns: A new figure CGImage with overlays removed, or nil if inpainting fails.
     public func removeText(
         from image: CGImage,
         figureBounds: CGRect,
@@ -47,7 +59,7 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
         let imgW = CGFloat(image.width)
         let imgH = CGFloat(image.height)
 
-        // Convert figure bounds from Vision coords (bottom-left origin) to CGImage coords (top-left origin)
+        // Convert figure bounds from Vision coords (bottom-left) to CGImage coords (top-left)
         let figurePixelRect = CGRect(
             x: figureBounds.origin.x * imgW,
             y: (1.0 - figureBounds.origin.y - figureBounds.height) * imgH,
@@ -60,24 +72,11 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
         )
         guard !clampedFigure.isEmpty else { return nil }
 
-        if debug {
-            print("[INPAINT-PIPELINE] image=\(image.width)×\(image.height)")
-            print("[INPAINT-PIPELINE] figureBounds=\(figureBounds)")
-            print("[INPAINT-PIPELINE] figurePixelRect=\(figurePixelRect)")
-            print("[INPAINT-PIPELINE] clampedFigure=\(clampedFigure)")
-        }
-
         // Crop figure region from source image
         guard let figureCrop = image.cropping(to: clampedFigure) else { return nil }
 
-        if debug {
-            print("[INPAINT-PIPELINE] figureCrop=\(figureCrop.width)×\(figureCrop.height)")
-        }
-
-        // Generate mask relative to the figure crop
-        // Text bounds need to be remapped from full-image normalized to figure-crop normalized
+        // Remap text bounds to figure-crop-relative coordinates
         let relativeTextBounds = textBounds.compactMap { textRect -> CGRect? in
-            // Vision coords → CGImage coords (flip Y)
             let textPixel = CGRect(
                 x: textRect.origin.x * imgW,
                 y: (1.0 - textRect.origin.y - textRect.height) * imgH,
@@ -87,261 +86,374 @@ public final class FigureInpaintingPipeline: @unchecked Sendable {
             let intersection = textPixel.intersection(clampedFigure)
             guard !intersection.isEmpty else { return nil }
 
-            // Convert to normalized coords relative to the figure crop
-            // Both figure and text pixel rects are in CGImage coords (top-left origin).
-            // TextMaskGenerator draws in CGContext (bottom-left origin), so flip Y for the mask.
             let relX = (intersection.origin.x - clampedFigure.origin.x) / clampedFigure.width
             let relY = (intersection.origin.y - clampedFigure.origin.y) / clampedFigure.height
             let relW = intersection.width / clampedFigure.width
             let relH = intersection.height / clampedFigure.height
-            // Flip Y for CGContext bottom-left origin
+            // Flip Y for CGContext bottom-left origin (TextMaskGenerator uses CGContext)
             return CGRect(x: relX, y: 1.0 - relY - relH, width: relW, height: relH)
-        }
-
-        if debug {
-            for (i, rb) in relativeTextBounds.enumerated() {
-                print("[INPAINT-PIPELINE] relativeText[\(i)]=\(rb)")
-            }
         }
 
         guard !relativeTextBounds.isEmpty else { return nil }
 
-        // Generate text mask at figure crop size
+        // === PASS 1: Text-only inpaint ===
         let cropSize = CGSize(width: clampedFigure.width, height: clampedFigure.height)
         guard let textMask = maskGenerator.generateMask(textBounds: relativeTextBounds, imageSize: cropSize) else {
             return nil
         }
 
-        // Enhance mask: add highly-saturated UI element pixels (buttons/badges)
-        // near text regions. These have distinctive colors (red, blue, green buttons)
-        // that differ from typical photo content.
-        let mask = enhanceMaskWithUIElements(
-            textMask: textMask,
-            figureCrop: figureCrop,
+        guard let pass1Result = try? inpainter.inpaint(image: figureCrop, mask: textMask) else {
+            if debug { print("[PIPELINE] Pass 1 LaMa inference failed") }
+            return nil
+        }
+
+        let cropW = Int(clampedFigure.width)
+        let cropH = Int(clampedFigure.height)
+        guard let pass1Resized = resizeCGImage(pass1Result, to: CGSize(width: cropW, height: cropH)) else {
+            return nil
+        }
+
+        if debug {
+            print("[PIPELINE] Pass 1 complete: \(pass1Resized.width)×\(pass1Resized.height)")
+        }
+
+        // === RESIDUE ANALYSIS on ORIGINAL + pass-1 comparison ===
+        let (candidates, debugInfo) = residueAnalyzer.analyze(
+            originalCrop: figureCrop,
+            pass1Result: pass1Resized,
             textBounds: relativeTextBounds
         )
 
         if debug {
-            print("[INPAINT-PIPELINE] mask=\(mask.width)×\(mask.height)")
-            // Count white pixels in mask
-            if let ctx = CGContext(data: nil, width: mask.width, height: mask.height,
-                                   bitsPerComponent: 8, bytesPerRow: mask.width,
-                                   space: CGColorSpaceCreateDeviceGray(),
-                                   bitmapInfo: CGImageAlphaInfo.none.rawValue) {
-                ctx.draw(mask, in: CGRect(x: 0, y: 0, width: mask.width, height: mask.height))
-                if let data = ctx.data {
-                    let ptr = data.bindMemory(to: UInt8.self, capacity: mask.width * mask.height)
-                    var whiteCount = 0
-                    for i in 0..<(mask.width * mask.height) { if ptr[i] > 128 { whiteCount += 1 } }
-                    let pct = Double(whiteCount) / Double(mask.width * mask.height) * 100
-                    print("[INPAINT-PIPELINE] mask white pixels: \(whiteCount) (\(String(format: "%.1f", pct))%)")
+            print("[PIPELINE] Residue analysis: \(debugInfo.count) components, \(candidates.count) accepted")
+        }
+
+        // Fast path: no UI element residue detected → return pass 1
+        guard !candidates.isEmpty else {
+            return pass1Resized
+        }
+
+        // Pre-validate: filter out candidates with low area (likely photo noise, not UI elements).
+        // The merge-signal and multi-signal scoring already filtered most false positives.
+        // Large blobs with merge confirmation are the strongest candidates.
+        let validatedCandidates = candidates.filter { candidate in
+            // Require minimum area to be worth a pass-2 mask entry
+            if candidate.pixelCount < 200 && !candidate.mergedAfterPass1 {
+                if debug {
+                    print("[PIPELINE] Pre-validation: blob \(Int(candidate.bounds.origin.x)),\(Int(candidate.bounds.origin.y)) rejected (too small without merge: \(candidate.pixelCount)px)")
                 }
+                return false
             }
+            return true
         }
 
-        // Run LaMa inpainting (handles resize to 512×512 internally)
-        guard let inpainted = try? inpainter.inpaint(image: figureCrop, mask: mask) else {
-            if debug { print("[INPAINT-PIPELINE] LaMa inference FAILED") }
-            return nil
-        }
-
-        // Resize inpainted result back to original figure crop size
-        let cropW = Int(clampedFigure.width)
-        let cropH = Int(clampedFigure.height)
-        guard let resized = resizeCGImage(inpainted, to: CGSize(width: cropW, height: cropH)) else {
-            return nil
+        guard !validatedCandidates.isEmpty else {
+            if debug { print("[PIPELINE] All candidates rejected by pre-validation, using pass 1") }
+            return pass1Resized
         }
 
         if debug {
-            print("[INPAINT-PIPELINE] result=\(resized.width)×\(resized.height)")
+            print("[PIPELINE] \(validatedCandidates.count)/\(candidates.count) candidates passed pre-validation")
         }
 
-        return resized
+        // === PASS 2: Expanded mask on ORIGINAL crop ===
+        guard let expandedArtifacts = mergeBlobs(textMask: textMask, candidates: validatedCandidates,
+                                                 imageSize: cropSize) else {
+            return pass1Resized
+        }
+
+        if debug {
+            let maskPixels = countWhitePixels(expandedArtifacts.mask)
+            let totalPixels = expandedArtifacts.mask.width * expandedArtifacts.mask.height
+            let pct = Double(maskPixels) / Double(totalPixels) * 100
+            print("[PIPELINE] Expanded mask: \(maskPixels) white pixels (\(String(format: "%.1f", pct))%)")
+        }
+
+        guard let pass2Result = try? inpainter.inpaint(image: figureCrop, mask: expandedArtifacts.mask) else {
+            if debug { print("[PIPELINE] Pass 2 LaMa inference failed, falling back to pass 1") }
+            return pass1Resized
+        }
+
+        guard let pass2Resized = resizeCGImage(pass2Result, to: CGSize(width: cropW, height: cropH)) else {
+            return pass1Resized
+        }
+
+        // === VALIDATION GATE ===
+        if !validatePass2(
+            original: figureCrop,
+            pass1: pass1Resized,
+            pass2: pass2Resized,
+            expandedMask: expandedArtifacts.mask,
+            expandedBounds: expandedArtifacts.expandedBounds
+        ) {
+            if debug { print("[PIPELINE] Validation failed, falling back to pass 1") }
+            return pass1Resized
+        }
+
+        if debug {
+            print("[PIPELINE] Pass 2 accepted")
+        }
+
+        return pass2Resized
     }
 
-    // MARK: - UI Element Detection
+    // MARK: - Mask Merging
 
-    /// Enhances the text mask by detecting highly-saturated UI element pixels
-    /// (buttons, badges, labels) near text regions.
-    ///
-    /// Strategy: within a search radius around each text bound, find pixels that are
-    /// highly saturated (strong single-channel dominance) — these are UI elements, not photo content.
-    /// Photo content has low saturation or complex patterns, so it won't be falsely masked.
-    private func enhanceMaskWithUIElements(
-        textMask: CGImage,
-        figureCrop: CGImage,
-        textBounds: [CGRect]  // normalized, bottom-left origin
-    ) -> CGImage {
-        let w = figureCrop.width
-        let h = figureCrop.height
-        guard w > 0, h > 0 else { return textMask }
-
-        // Render figure to RGBA bitmap
-        guard let imgCtx = CGContext(
-            data: nil, width: w, height: h,
-            bitsPerComponent: 8, bytesPerRow: w * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
-        ) else { return textMask }
-        imgCtx.draw(figureCrop, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let imgData = imgCtx.data else { return textMask }
-        let imgPtr = imgData.bindMemory(to: UInt8.self, capacity: w * h * 4)
-
-        // Render existing mask to mutable bitmap
-        guard let maskCtx = CGContext(
+    /// Merges candidate blob bounding boxes into the text mask and records the real
+    /// expanded support used for pass 2. Validation must reason about the same support.
+    private func mergeBlobs(textMask: CGImage, candidates: [CandidateBlob],
+                            imageSize: CGSize) -> ExpandedMaskArtifacts? {
+        let w = Int(imageSize.width), h = Int(imageSize.height)
+        guard let ctx = CGContext(
             data: nil, width: w, height: h,
             bitsPerComponent: 8, bytesPerRow: w,
             space: CGColorSpaceCreateDeviceGray(),
             bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return textMask }
-        maskCtx.draw(textMask, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let maskData = maskCtx.data else { return textMask }
-        let maskPtr = maskData.bindMemory(to: UInt8.self, capacity: w * h)
+        ) else { return nil }
 
-        // Magic wand: from each text mask border pixel, sample the adjacent color
-        // and flood-fill into connected pixels of similar color.
-        // This naturally finds UI elements (buttons/badges) around the text.
-        let colorThreshold = 80.0  // max RGB distance to consider "same color" (buttons have gradients)
-        var addedPixels = 0
+        // Draw existing text mask
+        ctx.draw(textMask, in: CGRect(x: 0, y: 0, width: w, height: h))
 
-        // Collect mask border pixels and their outward neighbor colors
-        var seeds: [(x: Int, y: Int, r: Double, g: Double, b: Double)] = []
-        for py in 0..<h {
-            for px in 0..<w {
-                guard maskPtr[py * w + px] > 128 else { continue }
-                // Check if this is a border pixel (has an unmasked neighbor)
-                for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1)] {
-                    let nx = px + dx, ny = py + dy
-                    if nx >= 0, nx < w, ny >= 0, ny < h, maskPtr[ny * w + nx] == 0 {
-                        let offset = (ny * w + nx) * 4
-                        seeds.append((
-                            x: nx, y: ny,
-                            r: Double(imgPtr[offset]),
-                            g: Double(imgPtr[offset + 1]),
-                            b: Double(imgPtr[offset + 2])
-                        ))
-                    }
+        // Add candidate blob bounding boxes with small margin (pixel coords, top-left origin)
+        // The margin ensures the full UI element is covered including anti-aliased edges.
+        // CGContext drawing uses bottom-left origin, so flip Y.
+        ctx.setFillColor(gray: 1, alpha: 1)
+        let imageBounds = CGRect(x: 0, y: 0, width: w, height: h)
+        var expandedBounds: [CGRect] = []
+        for candidate in candidates {
+            let b = candidate.bounds
+            // 25% margin compensates for anti-aliased edges and parts of the UI element
+            // that fall outside the detected high-saturation blob (e.g., button bottom half
+            // that extends below the text-anchored search ROI)
+            let marginX = max(10.0, b.width * 0.25)
+            let marginY = max(10.0, b.height * 0.25)
+            let expandedRect = CGRect(
+                x: b.origin.x - marginX,
+                y: b.origin.y - marginY,
+                width: b.width + marginX * 2,
+                height: b.height + marginY * 2
+            ).intersection(imageBounds)
+            guard !expandedRect.isEmpty else { continue }
+
+            let expandedX = expandedRect.origin.x
+            let expandedY = expandedRect.origin.y
+            let expandedW = expandedRect.width
+            let expandedH = expandedRect.height
+            let flippedY = CGFloat(h) - expandedY - expandedH
+            ctx.fill(CGRect(x: expandedX, y: flippedY, width: expandedW, height: expandedH))
+            expandedBounds.append(expandedRect.integral)
+        }
+
+        guard let mask = ctx.makeImage() else { return nil }
+        return ExpandedMaskArtifacts(mask: mask, expandedBounds: expandedBounds)
+    }
+
+    // MARK: - Validation Gate
+
+    /// Measures incremental pass-2 damage in a ring around the support area.
+    ///
+    /// This intentionally compares pass 1 vs pass 2, not original vs pass 2.
+    /// The question here is whether the SECOND pass introduced collateral changes
+    /// outside the support it was explicitly allowed to modify.
+    static func localIncrementalDamage(
+        pass1: CGImage,
+        pass2: CGImage,
+        supportMask: CGImage,
+        focusBounds: CGRect,
+        outerMargin: CGFloat = 20,
+        diffThreshold: Double = 20
+    ) -> Double? {
+        let w = min(pass1.width, pass2.width, supportMask.width)
+        let h = min(pass1.height, pass2.height, supportMask.height)
+        guard w > 0, h > 0 else { return nil }
+
+        func renderRGBA(_ image: CGImage) -> UnsafeMutablePointer<UInt8>? {
+            let ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: w * h * 4)
+            guard let ctx = CGContext(
+                data: ptr, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            ) else {
+                ptr.deallocate()
+                return nil
+            }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return ptr
+        }
+
+        func renderMask(_ image: CGImage) -> UnsafeMutablePointer<UInt8>? {
+            let ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: w * h)
+            guard let ctx = CGContext(
+                data: ptr, width: w, height: h,
+                bitsPerComponent: 8, bytesPerRow: w,
+                space: CGColorSpaceCreateDeviceGray(),
+                bitmapInfo: CGImageAlphaInfo.none.rawValue
+            ) else {
+                ptr.deallocate()
+                return nil
+            }
+            ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+            return ptr
+        }
+
+        guard let pass1Bmp = renderRGBA(pass1),
+              let pass2Bmp = renderRGBA(pass2),
+              let maskBmp = renderMask(supportMask) else { return nil }
+        defer {
+            pass1Bmp.deallocate()
+            pass2Bmp.deallocate()
+            maskBmp.deallocate()
+        }
+
+        let ringRect = focusBounds.insetBy(dx: -outerMargin, dy: -outerMargin)
+        let minX = max(0, Int(floor(ringRect.minX)))
+        let minY = max(0, Int(floor(ringRect.minY)))
+        let maxX = min(w, Int(ceil(ringRect.maxX)))
+        let maxY = min(h, Int(ceil(ringRect.maxY)))
+        guard minX < maxX, minY < maxY else { return nil }
+
+        var damage = 0
+        var total = 0
+
+        for py in minY..<maxY {
+            for px in minX..<maxX {
+                // Only inspect the ring band outside the candidate's own support rectangle.
+                if px >= Int(floor(focusBounds.minX)) && px < Int(ceil(focusBounds.maxX)) &&
+                   py >= Int(floor(focusBounds.minY)) && py < Int(ceil(focusBounds.maxY)) {
+                    continue
+                }
+
+                // Skip any pixel explicitly covered by the expanded support mask.
+                if maskBmp[py * w + px] > 128 {
+                    continue
+                }
+
+                total += 1
+                let off = (py * w + px) * 4
+                let diff = (
+                    abs(Double(pass1Bmp[off]) - Double(pass2Bmp[off])) +
+                    abs(Double(pass1Bmp[off + 1]) - Double(pass2Bmp[off + 1])) +
+                    abs(Double(pass1Bmp[off + 2]) - Double(pass2Bmp[off + 2]))
+                ) / 3.0
+                if diff > diffThreshold {
+                    damage += 1
                 }
             }
         }
 
-        // Group seeds by similar color to find dominant border colors
-        // (e.g., the red of a button that surrounds the text)
-        var colorClusters: [(r: Double, g: Double, b: Double, count: Int)] = []
-        for seed in seeds {
-            var matched = false
-            for i in 0..<colorClusters.count {
-                let diff = abs(seed.r - colorClusters[i].r) + abs(seed.g - colorClusters[i].g) + abs(seed.b - colorClusters[i].b)
-                if diff < colorThreshold {
-                    let n = Double(colorClusters[i].count)
-                    colorClusters[i].r = (colorClusters[i].r * n + seed.r) / (n + 1)
-                    colorClusters[i].g = (colorClusters[i].g * n + seed.g) / (n + 1)
-                    colorClusters[i].b = (colorClusters[i].b * n + seed.b) / (n + 1)
-                    colorClusters[i].count += 1
-                    matched = true
-                    break
-                }
-            }
-            if !matched {
-                colorClusters.append((r: seed.r, g: seed.g, b: seed.b, count: 1))
+        guard total > 0 else { return 0 }
+        return Double(damage) / Double(total) * 100.0
+    }
+
+    /// Validates pass 2 result: checks for collateral damage outside the expanded mask.
+    private func validatePass2(
+        original: CGImage,
+        pass1: CGImage,
+        pass2: CGImage,
+        expandedMask: CGImage,
+        expandedBounds: [CGRect]
+    ) -> Bool {
+        let w = min(original.width, pass1.width, pass2.width)
+        let h = min(original.height, pass1.height, pass2.height)
+        guard w > 0, h > 0 else { return false }
+
+        guard let origBmp = renderBitmap(original, w: w, h: h),
+              let pass2Bmp = renderBitmap(pass2, w: w, h: h) else { return false }
+        defer { origBmp.deallocate(); pass2Bmp.deallocate() }
+
+        // Global check: overall preserve metrics
+        var preservedCount = 0
+        var totalPreserveDiff = 0.0
+
+        for i in 0..<(w * h) {
+            let off = i * 4
+            let diff = (abs(Double(origBmp[off]) - Double(pass2Bmp[off])) +
+                        abs(Double(origBmp[off+1]) - Double(pass2Bmp[off+1])) +
+                        abs(Double(origBmp[off+2]) - Double(pass2Bmp[off+2]))) / 3.0
+            if diff < 15 {
+                preservedCount += 1
+                totalPreserveDiff += diff
             }
         }
 
-        // Only flood-fill for significant clusters (>10% of border pixels)
-        // that are clearly NOT photo-like (high saturation)
-        let minClusterSize = max(5, seeds.count / 50)  // 2% of border pixels suffices for small buttons
-        let significantClusters = colorClusters.filter { cluster in
-            guard cluster.count >= minClusterSize else { return false }
-            let maxC = max(cluster.r, cluster.g, cluster.b)
-            let minC = min(cluster.r, cluster.g, cluster.b)
-            let sat = maxC > 10 ? (maxC - minC) / maxC : 0
-            return sat > 0.7 && maxC > 100  // Only strongly saturated bright colors (buttons/badges)
-        }
+        let preservedPct = Double(preservedCount) / Double(w * h) * 100
+        let avgPreserveDiff = preservedCount > 0 ? totalPreserveDiff / Double(preservedCount) : 999
 
         if debug {
-            print("[INPAINT-PIPELINE] Magic wand: \(seeds.count) border seeds, \(colorClusters.count) clusters, \(significantClusters.count) significant (min \(minClusterSize) seeds)")
-            for c in colorClusters.sorted(by: { $0.count > $1.count }).prefix(5) {
-                let maxC = max(c.r, c.g, c.b)
-                let minC = min(c.r, c.g, c.b)
-                let sat = maxC > 10 ? (maxC - minC) / maxC : 0
-                print("[INPAINT-PIPELINE]   cluster RGB=(\(String(format: "%.0f,%.0f,%.0f", c.r, c.g, c.b))) count=\(c.count) sat=\(String(format: "%.2f", sat))")
+            print("[PIPELINE] Validation: preserved=\(String(format: "%.1f", preservedPct))% avgDiff=\(String(format: "%.1f", avgPreserveDiff))")
+        }
+
+        if preservedPct < 70 || avgPreserveDiff > 5 {
+            return false
+        }
+
+        // Local check: compare pass 1 vs pass 2 only in a ring around each expanded support.
+        // Intended pass-2 changes inside the support must not be counted as collateral damage.
+        for expandedBound in expandedBounds {
+            guard let damagePct = Self.localIncrementalDamage(
+                pass1: pass1,
+                pass2: pass2,
+                supportMask: expandedMask,
+                focusBounds: expandedBound,
+                outerMargin: 20
+            ) else {
+                continue
+            }
+            if debug {
+                print(
+                    "[PIPELINE] Local validation: support \(Int(expandedBound.origin.x)),\(Int(expandedBound.origin.y)) "
+                    + "\(Int(expandedBound.width))×\(Int(expandedBound.height)) ring damage="
+                    + "\(String(format: "%.1f", damagePct))%"
+                )
+            }
+            if damagePct > 30 {
+                return false
             }
         }
 
-        // BFS flood-fill from mask border into color-matching pixels
-        var queue: [(Int, Int)] = []
-
-        // Seed all unmasked border-adjacent pixels
-        for seed in seeds {
-            guard maskPtr[seed.y * w + seed.x] == 0 else { continue }
-            // Check if this pixel matches any significant UI color cluster
-            for cluster in significantClusters {
-                let diff = abs(seed.r - cluster.r) + abs(seed.g - cluster.g) + abs(seed.b - cluster.b)
-                if diff < colorThreshold {
-                    maskPtr[seed.y * w + seed.x] = 255
-                    queue.append((seed.x, seed.y))
-                    addedPixels += 1
-                    break
-                }
-            }
-        }
-
-        // BFS: expand into connected pixels of similar color
-        var head = 0
-        let maxExpand = w * h / 10  // safety: max 10% of image
-        while head < queue.count, addedPixels < maxExpand {
-            let (cx, cy) = queue[head]
-            head += 1
-            for (dx, dy) in [(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(1,-1),(-1,1),(1,1)] {
-                let nx = cx + dx, ny = cy + dy
-                guard nx >= 0, nx < w, ny >= 0, ny < h, maskPtr[ny * w + nx] == 0 else { continue }
-
-                let offset = (ny * w + nx) * 4
-                let pr = Double(imgPtr[offset])
-                let pg = Double(imgPtr[offset + 1])
-                let pb = Double(imgPtr[offset + 2])
-
-                // Check if pixel color matches any significant cluster
-                for cluster in significantClusters {
-                    let diff = abs(pr - cluster.r) + abs(pg - cluster.g) + abs(pb - cluster.b)
-                    if diff < colorThreshold {
-                        maskPtr[ny * w + nx] = 255
-                        queue.append((nx, ny))
-                        addedPixels += 1
-                        break
-                    }
-                }
-            }
-        }
-
-        if debug && addedPixels > 0 {
-            let pct = Double(addedPixels) / Double(w * h) * 100
-            print("[INPAINT-PIPELINE] Magic wand: \(addedPixels) UI pixels added (\(String(format: "%.1f", pct))%)")
-        }
-
-        if addedPixels == 0 { return textMask }
-        return maskCtx.makeImage() ?? textMask
+        return true
     }
 
     // MARK: - Helpers
 
-    private func resizeCGImage(_ image: CGImage, to size: CGSize) -> CGImage? {
-        let width = Int(size.width)
-        let height = Int(size.height)
-        guard width > 0, height > 0 else { return nil }
+    private func renderBitmap(_ image: CGImage, w: Int, h: Int) -> UnsafeMutablePointer<UInt8>? {
+        let ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: w * h * 4)
+        guard let ctx = CGContext(
+            data: ptr, width: w, height: h,
+            bitsPerComponent: 8, bytesPerRow: w * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { ptr.deallocate(); return nil }
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return ptr
+    }
 
+    private func resizeCGImage(_ image: CGImage, to size: CGSize) -> CGImage? {
+        let width = Int(size.width), height = Int(size.height)
+        guard width > 0, height > 0 else { return nil }
         guard let context = CGContext(
-            data: nil,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width * 4,
+            data: nil, width: width, height: height,
+            bitsPerComponent: 8, bytesPerRow: width * 4,
             space: CGColorSpaceCreateDeviceRGB(),
             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
         ) else { return nil }
-
         context.interpolationQuality = .high
         context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
         return context.makeImage()
+    }
+
+    private func countWhitePixels(_ mask: CGImage) -> Int {
+        let w = mask.width, h = mask.height
+        guard let ctx = CGContext(data: nil, width: w, height: h,
+                                   bitsPerComponent: 8, bytesPerRow: w,
+                                   space: CGColorSpaceCreateDeviceGray(),
+                                   bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return 0 }
+        ctx.draw(mask, in: CGRect(x: 0, y: 0, width: w, height: h))
+        guard let data = ctx.data else { return 0 }
+        let ptr = data.bindMemory(to: UInt8.self, capacity: w * h)
+        var count = 0
+        for i in 0..<(w * h) { if ptr[i] > 128 { count += 1 } }
+        return count
     }
 }
